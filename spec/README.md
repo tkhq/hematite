@@ -27,6 +27,9 @@ vectors — not by review discipline. Concept note: [`../CONCEPT.md`](../CONCEPT
 - [C — Test vectors](appendix-c-test-vectors.md) (normative; data files in `vectors/`)
 - [D — Threat model mapping](appendix-d-threat-model.md)
 - [E — Rust crate map](appendix-e-crate-map.md)
+- [F — Extension sketch: X-postgres](appendix-f-x-postgres.md) (informative)
+- [G — Extension sketch: X-mcp](appendix-g-x-mcp.md) (informative)
+- [H — Other extension candidates](appendix-h-other-candidates.md) (informative: judge, response retry, SNI-only, control plane)
 - [`schema/audit-record.schema.json`](schema/audit-record.schema.json) — normative audit schema
 
 ## Status

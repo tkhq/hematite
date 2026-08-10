@@ -9,17 +9,20 @@ Each of these exists in iron-proxy and is deliberately excluded so v1 is
 finishable. Each names the seam it would re-enter through, so exclusion is a
 decision, not drift.
 
-| Excluded | Why | Re-entry seam |
-|----------|-----|---------------|
-| LLM judge transform | Nondeterministic by nature — it breaks INV-4 for its trace, needs its own conformance story (fallbacks, breakers) | New registry transform (Part 03 §5), spec level "X-judge" |
-| MCP policy + gateway | Body-protocol interception with SSE rewriting; a full sub-spec | A new interceptor stage between pipeline and dialer, "X-mcp" |
-| PostgreSQL MITM | A second wire protocol and SQL AST analysis; nothing shared with HTTP path but config and audit | Sibling listener, "X-postgres" |
-| Control-plane managed mode | Distribution concern, not data plane | The config loader interface (Part 09 §2 step 1 is pluggable) |
-| Response-retry handler | Complex trust delegation; needs its own threat analysis | Response-path hook after upstream, before response transforms |
-| Cloud secret sources (AWS SM/SSM, 1Password) | SDK weight; `env`/`file` prove the source abstraction | `SecretSource` trait (Appendix E) |
-| OTEL export | Downstream of the stable JSON line format (Part 08 §4) | External collector, or "X-otel" emitter |
-| SNI-only passthrough mode | Halves the TLS story's complexity to defer; MITM is the product | `tls.mode` key, currently fixed to `mitm` |
-| Metrics endpoint, HTTP/3, warn-mode for transforms other than allowlist | Nice-to-haves | — |
+| Excluded | Why | Re-entry seam | Parked design |
+|----------|-----|---------------|---------------|
+| LLM judge transform | Nondeterministic by nature — it breaks INV-4 for its trace, needs its own conformance story (fallbacks, breakers) | New registry transform (Part 03 §5), spec level "X-judge" | Appendix H.1 |
+| MCP policy + gateway | Body-protocol interception with SSE rewriting; a full sub-spec | A new interceptor stage between pipeline and dialer, "X-mcp" | Appendix G |
+| PostgreSQL MITM | A second wire protocol and SQL AST analysis; nothing shared with HTTP path but config and audit | Sibling listener, "X-postgres" | Appendix F |
+| Control-plane managed mode | Distribution concern, not data plane | The config loader interface (Part 09 §2 step 1 is pluggable) | Appendix H.4 |
+| Response-retry handler | Complex trust delegation; needs its own threat analysis | Response-path hook after upstream, before response transforms | Appendix H.2 |
+| Cloud secret sources (AWS SM/SSM, 1Password) | SDK weight; `env`/`file` prove the source abstraction | `SecretSource` trait (Appendix E) | — (Appendix H "Not parked") |
+| OTEL export | Downstream of the stable JSON line format (Part 08 §4) | External collector, or "X-otel" emitter | — (Appendix H "Not parked") |
+| SNI-only passthrough mode | Halves the TLS story's complexity to defer; MITM is the product | `tls.mode` key, currently fixed to `mitm` | Appendix H.3 |
+| Metrics endpoint, HTTP/3, warn-mode for transforms other than allowlist | Nice-to-haves | — | — |
+
+Appendices F–H are informative parking lots: enough design to keep each
+exclusion honest, none of it normative.
 
 ## 2. Permanently out of scope
 
