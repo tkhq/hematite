@@ -1,12 +1,12 @@
 # Appendix A — Acceptance Test (normative for L3)
 
-The single scenario that means "hematite works." It is the Phase-1 artifact
-that made the spec falsifiable, and it MUST be wired as the executable
-integration test (`tests/acceptance/`) — docker-compose with three services:
-`hematite`, an echo upstream standing in for `httpbin.org`, and a `client`
-whose DNS points at the proxy. Config: Appendix B. The test asserts both the
-client-observed behavior and the emitted audit records (validated against
-`spec/schema/audit-record.schema.json`).
+This is the single scenario that means "hematite works" — the Phase-1
+artifact that made the spec falsifiable. It MUST be wired as the executable
+integration test (`tests/acceptance/`): a docker-compose harness with three
+services — `hematite`, an echo upstream standing in for `httpbin.org`, and a
+`client` whose DNS points at the proxy. Config: Appendix B. The test asserts
+both the client-observed behavior and the emitted audit records, validating
+the records against `spec/schema/audit-record.schema.json`.
 
 | # | Step | Expected |
 |---|------|----------|

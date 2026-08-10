@@ -2,9 +2,10 @@
 
 *Depends on: Part 00. Conformance: L0.*
 
-The policy kernel is a pure function. This part defines its input, output, and
-intermediate types. Everything a transform may observe or produce is defined
-here; if a datum is not in these types, a transform cannot depend on it.
+The policy kernel is a pure function. This part defines the kernel's input,
+output, and intermediate types. These types are the complete universe a
+transform can observe or produce: if a datum is not in them, a transform
+cannot depend on it.
 
 ## 1. RequestSummary (kernel input)
 
@@ -24,18 +25,18 @@ interaction to a `RequestSummary`:
 | `sni` | optional string | TLS SNI when `mode` ≠ `http`. |
 | `remote_addr` | IP:port | The workload's socket address. |
 
-Rules match against the **raw** path. To keep that sound, listeners MUST
-reject (HTTP 400) any request whose path contains a `.` or `..` segment
-before the kernel runs. The check runs on the **percent-decoded** segments,
-so `/%2e%2e/` is rejected too (threat T6, Appendix D); matching itself stays
-on the raw path.
+Rules match against the **raw** path. To keep raw-path matching sound,
+listeners MUST reject (HTTP 400) any request whose path contains a `.` or
+`..` segment, before the kernel runs. The check runs on the
+**percent-decoded** segments, so `/%2e%2e/` is rejected too (threat T6,
+Appendix D). Matching itself always uses the raw path.
 
 ## 2. Verdict
 
 Every transform invocation returns exactly one verdict:
 
 - **`Continue`** — pass the (possibly rewritten) request to the next transform, or to the dialer if last.
-- **`Reject`** — stop the pipeline. For pipeline rejections the proxy MUST return HTTP 403 with an empty body unless the transform supplies a response. Audit action `reject`, WARN level. (Non-pipeline rejections — listener 400s, guard dial denials — reuse audit action `reject` with their own status codes; Parts 05 §6, 07 §2.)
+- **`Reject`** — stop the pipeline. For a pipeline rejection the proxy MUST return HTTP 403 with an empty body, unless the transform supplies a response. Audit action `reject`, WARN level. Non-pipeline rejections (listener 400s, guard dial denials) reuse audit action `reject` with their own status codes; see Parts 05 §6 and 07 §2.
 - **`Stub`** — stop the pipeline and return the transform-supplied response *as if it were the upstream's*. Audit action `stub`, INFO level. `Stub` exists so intentional proxy-served responses are distinguishable from denials.
 
 There is no `Allow` verdict at the transform level: allowing is the absence of
@@ -43,7 +44,7 @@ rejection at the end of the pipeline. There is also no verdict that skips
 later transforms without terminating — ordering is total (Part 03).
 
 `warn` is not a verdict. A transform in warn mode returns `Continue` and
-records `"action": "warn"` in its trace annotations (Part 04 §2).
+annotates `warn: true` in its trace (Part 04 §1).
 
 ## 3. Trace
 
@@ -64,12 +65,12 @@ whole-request outcome (Part 00 §3). `error` is not a verdict a transform
 returns; it records that the transform failed (Part 03 §3).
 
 Annotation values MUST be JSON-serializable scalars, arrays, or objects.
-Annotations MUST NOT contain a secret value (INV-1) — the type system makes
-this unrepresentable, and the vectors in Appendix C §4 check it behaviorally.
-Traces from a tunnel handshake are recorded separately from traces of
-requests inside the tunnel (Part 08 §2); each in-tunnel request gets an
-independent copy of the tunnel's annotations so sibling requests cannot
-observe each other's state.
+Annotations MUST NOT contain a secret value (INV-1); the type system makes a
+secret-bearing annotation unrepresentable, and the vectors in Appendix C §4
+check the same property behaviorally. Traces from a tunnel handshake are
+recorded separately from traces of requests inside the tunnel (Part 08 §2).
+Each in-tunnel request gets an independent copy of the tunnel's annotations,
+so sibling requests cannot observe each other's state.
 
 ## 4. Buffered body
 
@@ -83,13 +84,13 @@ Bodies are streamed by default and buffered only on demand:
 - After each transform runs, the body MUST be rewound to offset 0 so the next
   transform reads from the start.
 - A body that fits the cap and was buffered (or replaced) by a transform is
-  forwarded as the buffered bytes with an exact `Content-Length` (converting
-  chunked framing to fixed-length).
+  forwarded as the buffered bytes with an exact `Content-Length`. This
+  converts chunked framing to fixed-length framing.
 - A body that **exceeds** the cap is read-only: transforms observe the
   truncated prefix, but the proxy MUST forward the original byte stream with
   the client's framing. A transform that attempts to modify an over-cap body
   MUST fail the pipeline as a transform error (fail closed — Part 03 §3,
-  Part 04 §3.2), never silently forward a half-rewritten body.
+  Part 04 §3.2). The proxy MUST NOT forward a half-rewritten body.
 
 ## 5. Kernel signature
 
@@ -102,6 +103,6 @@ PipelineOutcome = { verdict: Continue(proof) | Reject{by, response?} | Stub{by, 
 ```
 
 `Continue(proof)` carries the value the dialer consumes (INV-2). The kernel
-performs no I/O; transforms that need I/O at request time (secret sources,
-Part 04 §3) do it through a resolver interface injected at pipeline build
-time, and their behavior is specified so that vectors can stub it.
+performs no I/O. A transform that needs I/O at request time (secret sources,
+Part 04 §3) performs it through a resolver interface injected at pipeline
+build time; the resolver's behavior is specified so that vectors can stub it.

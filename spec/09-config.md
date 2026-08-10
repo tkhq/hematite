@@ -23,9 +23,13 @@ log:        { level }
 
 ## 2. Load order and defaults
 
-1. Parse YAML. 2. Apply `HEMATITE_`-prefixed environment overrides (path
-uppercased, `_`-joined: `HEMATITE_PROXY_HTTP_LISTEN`). 3. Apply defaults.
-4. Validate. Defaults:
+1. Parse the YAML file.
+2. Apply `HEMATITE_`-prefixed environment overrides. The variable name is the
+   config path, uppercased and `_`-joined: `HEMATITE_PROXY_HTTP_LISTEN`.
+3. Apply defaults.
+4. Validate (§3).
+
+Defaults:
 
 | Key | Default |
 |-----|---------|
@@ -61,10 +65,10 @@ uppercased, `_`-joined: `HEMATITE_PROXY_HTTP_LISTEN`). 3. Apply defaults.
 Disabled unless `management.listen` is set; SHOULD bind loopback. One
 endpoint:
 
-- `POST /v1/reload`, `Authorization: Bearer <token>` compared in constant
-  time. Re-reads the config file, builds a complete new pipeline +
-  DNS/TLS state, then swaps atomically (Part 03 §1). In-flight requests
-  finish on the old pipeline.
+- `POST /v1/reload`, authenticated with `Authorization: Bearer <token>`
+  compared in constant time. Reload re-reads the config file, builds a
+  complete new pipeline plus DNS/TLS state, then swaps atomically
+  (Part 03 §1). In-flight requests finish on the old pipeline.
 - Invalid new config → 422 with the validation error; the old config MUST
   keep serving untouched. Other failures → 500. Success → 200.
 - Reload MUST complete even if the requesting client disconnects.

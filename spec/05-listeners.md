@@ -1,6 +1,6 @@
 # Part 05 — Listeners
 
-*Depends on: Parts 00–03. Conformance: §2 at L1; §3–§5 at L2.*
+*Depends on: Parts 00–03. Conformance: §1–§2 and §6 at L1; §3–§5 at L2.*
 
 Listeners adapt sockets into `RequestSummary` values, invoke the kernel, and
 carry allowed traffic to the dialer (Part 07). Four listeners: HTTP, HTTPS,
@@ -10,8 +10,8 @@ tunnel, DNS (Part 06). Each is enabled by its config `listen` address.
 
 For every HTTP-shaped request, in order:
 
-1. `summary.host` from the `Host` header (hostname lowercased, port split
-   off). Missing/empty host → 400.
+1. Take `summary.host` from the `Host` header: lowercase the hostname and
+   split off any port. Missing or empty host → 400.
 2. Reject paths containing `.` or `..` segments, checked on the
    percent-decoded segments → 400 (Part 01 §1).
 3. On TLS connections, the SNI hostname MUST equal the `Host` hostname
@@ -74,15 +74,15 @@ reply (`05 00 00 01` + zero addr + port), then §4.3.
 
 Peek the first byte after the handshake:
 
-- `0x16` → TLS: terminate as in §3, minting the leaf for the **CONNECT
-  target** — a dNSName SAN for hostnames, an iPAddress SAN for IP literals
-  (ALPN h2 + http/1.1) — and serve the inner requests through the full
-  pipeline. If the inner ClientHello carries an SNI that differs from the
-  CONNECT target hostname, close the connection (threat T6: the policy
-  identity and the TLS identity must agree). Inner requests keep
-  `mode: "tunnel"` and carry the tunnel's traces for audit attribution
-  (Part 08 §2); each inner request re-runs the pipeline independently. The
-  upstream port is the CONNECT target's port.
+- `0x16` → TLS. Terminate as in §3, minting the leaf for the **CONNECT
+  target**: a dNSName SAN for a hostname, an iPAddress SAN for an IP literal
+  (ALPN h2 + http/1.1). Serve the inner requests through the full pipeline;
+  each inner request re-runs the pipeline independently. If the inner
+  ClientHello carries an SNI that differs from the CONNECT target hostname,
+  close the connection (threat T6: the policy identity and the TLS identity
+  must agree). Inner requests keep `mode: "tunnel"` and carry the tunnel
+  handshake's traces for audit attribution (Part 08 §2). The upstream port is
+  the CONNECT target's port.
 - `'A'..'Z'` → plain HTTP served as §2.
 - Else → close.
 
@@ -92,9 +92,9 @@ against slow clients (threat T8).
 ## 5. Streaming (L2)
 
 - **WebSocket**: a request with a valid `Upgrade: websocket` handshake that
-  passes the request pipeline is forwarded; on upstream `101`, the proxy
+  passes the request pipeline is forwarded. On an upstream `101`, the proxy
   switches to bidirectional byte copy. Response transforms do not run on
-  frames. Audit action reflects the handshake result.
+  frames. The audit action reflects the handshake result.
 - **SSE**: a response with `Content-Type: text/event-stream` MUST be streamed
   with a flush after each chunk, never buffered end-to-end. Response
   transforms that would force full buffering MUST NOT match SSE responses in

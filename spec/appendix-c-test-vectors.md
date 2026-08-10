@@ -81,12 +81,13 @@ Input headers → forwarded headers:
 
 ## §4 Decision traces (Parts 01/03/08) — reject vector at L0; full-pipeline vector at L3
 
-Vector records are compared **after removing `duration_ms` fields** (the one
-nondeterministic datum, INV-4); the normative JSON Schema applies to complete
-live records (Appendix A step 10), not to these stripped forms. Record
-fields outside the traces (`status_code`, `sni`, `mode`) are filled by the
-conformance harness from the summary and the outcome (403 for a pipeline
-reject, Part 01 §2) — the kernel itself produces the verdict and traces.
+Vector records are compared **after removing `duration_ms` fields** — the
+one nondeterministic datum (INV-4). The normative JSON Schema applies to
+complete live records (Appendix A step 10), not to these stripped forms.
+The kernel itself produces only the verdict and traces; the conformance
+harness fills the record fields outside the traces (`status_code`, `sni`,
+`mode`) from the summary and the outcome (403 for a pipeline reject,
+Part 01 §2).
 
 Full-pipeline vector (L3 — uses `secrets`): the Appendix B config (resolver
 stubbed), summary `GET https://httpbin.org/headers` with `Authorization:

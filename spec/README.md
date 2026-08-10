@@ -36,5 +36,6 @@ vectors — not by review discipline. Concept note: [`../CONCEPT.md`](../CONCEPT
 
 v0.1: decisions drafted from the Phase-1 concept note; derived from a
 first-principles study of iron-proxy's data plane (compatibility is a
-non-goal, Part 00 §6). Pending before v0.2: vector data files extracted from
-Appendix C, the conformance runner, and the plain-language pass.
+non-goal, Part 00 §6). The plain-language/coherency pass is done. Pending
+before v0.2: vector data files extracted from Appendix C and the conformance
+runner.

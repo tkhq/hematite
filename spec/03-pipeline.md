@@ -6,9 +6,9 @@
 
 A pipeline is the ordered list of transforms named in `transforms:` in the
 config, in file order. Order is semantic and operator-controlled; hematite
-MUST NOT reorder transforms. The pipeline is immutable once built; reload
-(Part 09 §4) builds a new pipeline and swaps it atomically. A request MUST be
-processed start-to-finish by a single pipeline instance — never half-old,
+MUST NOT reorder transforms. The pipeline is immutable once built. Reload
+(Part 09 §4) builds a new pipeline and swaps it atomically. A single pipeline
+instance MUST process each request start-to-finish — never half-old,
 half-new (threat T9).
 
 ## 2. Transform contract
@@ -42,20 +42,20 @@ transform_response(ctx, request, response) → verdict
 ## 4. Annotations
 
 A transform annotates through the context (`ctx.annotate(key, value)`).
-Annotations are drained into that transform's trace when it returns; they are
-not visible to other transforms. Keys are flat strings; namespacing is by
-convention (`swapped`, `stripped_headers`, …) and each transform's part
-enumerates its keys exhaustively — an implementation MUST NOT invent
-additional keys, so operators can rely on a closed vocabulary when querying
-records (Part 08 §2).
+Annotations are drained into that transform's trace when the transform
+returns; other transforms cannot see them. Keys are flat strings, namespaced
+by convention (`swapped`, `stripped_headers`, …). Each transform's part
+enumerates its keys exhaustively, and an implementation MUST NOT invent
+additional keys. Operators can therefore rely on a closed vocabulary when
+querying records (Part 08 §2).
 
 ## 5. Registry and extension seam
 
 v1 defines exactly five transforms (Part 04): `allowlist`, `secrets`,
 `header_allowlist`, `annotate`, `body_capture`. A config naming any other
-transform MUST fail validation. Future extensions (judge, MCP — Part 10) are
-new registry entries with their own parts; the contract in this part is the
-seam and is expected to remain stable.
+transform MUST fail validation. Future extensions (judge, MCP — Part 10)
+enter as new registry entries with their own parts. The transform contract in
+this part is that seam, and it is expected to remain stable.
 
 ## 6. Determinism (INV-4)
 

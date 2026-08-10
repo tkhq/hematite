@@ -72,16 +72,16 @@ swaps in real values at egress. This is the transform INV-1 exists for.
 
 - **`env`** — read once at pipeline build from the proxy's environment.
   Missing/empty var is a build-time validation error.
-- **`file`** — exact file contents (no trimming; the writer controls trailing
-  whitespace). Re-read at pipeline build and, when `ttl` is set, on cache
-  expiry. `ttl` (default: cache forever) caches success; `failure_ttl`
-  (default 1m) caches failure so a broken backend does not stall every
-  request, and a long `ttl` never delays recovery. On refresh failure after a
-  prior success, the stale value MUST be served and retry scheduled at
-  `ttl/2`.
-- Every source accepts optional `json_key`: parse the resolved value as a
-  JSON object and extract the named top-level string field; anything else
-  (non-JSON, missing key, non-string) is a resolution failure.
+- **`file`** — the exact file contents, with no trimming; the writer controls
+  trailing whitespace. The file is read at pipeline build and re-read, when
+  `ttl` is set, on cache expiry. `ttl` (default: cache forever) caches
+  success. `failure_ttl` (default 1m) caches failure, so a broken backend
+  does not stall every request and a long `ttl` never delays recovery. When a
+  refresh fails after a prior success, the transform MUST serve the stale
+  value and schedule a retry at `ttl/2`.
+- Every source accepts an optional `json_key`: parse the resolved value as a
+  JSON object and extract the named top-level string field. Anything else —
+  non-JSON, a missing key, a non-string value — is a resolution failure.
 - Resolution failures follow `require` (§3.3); the error text MUST name the
   source, never the value (INV-1).
 
@@ -102,21 +102,22 @@ with the resolved secret:
   **raw** path; the resolved secret is percent-encoded when substituted.
   Untouched bytes are never re-encoded (Part 07 §1). When `match_path` is
   set, validation MUST require `proxy_value` to consist only of RFC 3986
-  unreserved characters, so the raw-path scan cannot miss an encoded token.
-  Off by default, same log-leak reason.
-- **Body** (`match_body`): byte-level replace-all within the buffered body
-  (this forces buffering, Part 01 §4). If the body exceeds
+  unreserved characters — this guarantees the raw-path scan cannot miss a
+  percent-encoded form of the token. Off by default, for the same log-leak
+  reason as query.
+- **Body** (`match_body`): byte-level replace-all within the buffered body.
+  Reading the body forces buffering (Part 01 §4). If the body exceeds
   `max_request_body_bytes`, the swap cannot be applied soundly; when the
   request matches this secret's `rules`, the transform MUST fail as a
   transform error (Part 01 §4 — over-cap bodies are read-only, fail closed).
 
 ### 3.3 `require`
 
-When `require: true` and the request matched `rules` but **no** location
-contained `proxy_value` — or the source failed to resolve — return `Reject`.
-This stops a compromised workload from bypassing custody with its own
-credentials. When `require: false`, continue silently and annotate
-unavailability.
+When `require: true`, the request matched `rules`, and either **no** opted-in
+location contained `proxy_value` or the source failed to resolve: return
+`Reject`. This stops a compromised workload from bypassing custody with its
+own credentials. When `require: false`: return `Continue` and, on a
+resolution failure, annotate `secret_unavailable` (§3.4).
 
 ### 3.4 Annotations
 
@@ -137,13 +138,15 @@ Default-deny request-header filter.
     rules: [{ host: "api.openai.com" }]   # optional; absent = all requests
 ```
 
-- Any request header whose canonical name matches no entry (Part 02 §5) is
-  removed before the request goes upstream. Hop-by-hop stripping (Part 07 §3)
-  happens regardless and later.
+- The transform removes every request header whose canonical name matches no
+  entry (Part 02 §5) before the request goes upstream. Hop-by-hop stripping
+  (Part 07 §3) happens later, and happens whether or not this transform is
+  configured.
 - Never rejects. When at least one header is removed, annotate
   `stripped_headers`: sorted list of removed canonical names.
-- Ordering note (documented, not enforced): place after `secrets` and after
-  `annotate`, so injected credentials survive and annotation sees originals.
+- Ordering note (documented, not enforced): place `header_allowlist` after
+  `secrets` and after `annotate`, so that injected credentials survive
+  filtering and `annotate` sees the original headers.
 
 ## 5. `body_capture`
 
@@ -156,6 +159,9 @@ Observation-only request-body recording.
     rules: [{ host: "api.anthropic.com", methods: ["POST"], paths: ["/v1/messages"] }]
 ```
 
+- The transform's `max_request_body_bytes` is its own capture cap; it shares
+  a name with the global `proxy.max_request_body_bytes` (Part 09) but is
+  independent of it.
 - On match, read the body (forcing buffering) up to the capture cap and
   attach it to the audit record's `body_capture` group (Part 08 §2):
   `request_body` (UTF-8 lossy) and `request_body_truncated` (bool).
@@ -164,8 +170,8 @@ Observation-only request-body recording.
 - Never rejects; a body read error is annotated (`error` key in annotations),
   not fatal.
 - Response bodies are not captured (SSE would stall; Part 10).
-- Ordering note: place **before** `secrets` when `match_body: true`, so the
-  log holds proxy tokens, not real credentials.
+- Ordering note: place `body_capture` **before** any `secrets` entry that has
+  `match_body: true`, so the log holds proxy tokens, not real credentials.
 
 ## 6. Ordering summary (informative)
 

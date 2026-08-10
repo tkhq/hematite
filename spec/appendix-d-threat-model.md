@@ -1,8 +1,9 @@
 # Appendix D — Threat Model Mapping (normative cross-reference)
 
-Every threat from the Phase-1 note, mapped to the design decision that
-mitigates it. A decision that maps to no threat is decoration; a threat with
-no decision is a hole. Neither exists below.
+Every threat from the Phase-1 note (T1–T9), plus one found during drafting
+(T10), mapped to the design decision that mitigates it. A decision that maps
+to no threat is decoration; a threat with no decision is a hole. Neither
+exists below.
 
 | # | Threat | Mitigation | Spec |
 |---|--------|-----------|------|

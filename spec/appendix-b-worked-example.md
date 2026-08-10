@@ -106,6 +106,5 @@ proxy-openai-abc123`, DNS-steered to the proxy:
 7. `header_allowlist`: all present headers match entries → nothing stripped.
 8. Guard: resolved IP is public → dial; hop-by-hop stripped; exact
    Content-Length (body untouched → original framing).
-9. Response passes back through the (no-op) response path; audit record
-   emitted — the one shown in Appendix C §4.
-```
+9. The response passes back through the (no-op) response path; the audit
+   record is emitted — the one shown in Appendix C §4.

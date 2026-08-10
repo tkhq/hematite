@@ -18,9 +18,10 @@ After the pipeline continues (INV-2: the dialer consumes the verdict proof):
 ## 2. The guard (deny CIDRs)
 
 `proxy.upstream_deny_cidrs` is enforced **after** name resolution, at the
-moment of connection, against the exact IP being dialed. This placement — not
-at match time — is what closes DNS rebinding (threat T2): an allowlisted
-hostname whose A record points at IMDS still fails at the socket.
+moment of connection, against the exact IP being dialed. The guard runs at
+dial time, not at match time, and that placement is what closes DNS rebinding
+(threat T2): an allowlisted hostname whose A record points at IMDS still
+fails at the socket.
 
 - Default deny set (applies when the key is absent): `169.254.169.254/32`,
   `fd00:ec2::254/128`, `fd20:ce::254/128` (cloud metadata), `127.0.0.0/8`,
@@ -39,12 +40,12 @@ hostname whose A record points at IMDS still fails at the socket.
 
 ## 3. Header hygiene
 
-Before forwarding, the proxy MUST strip hop-by-hop headers (RFC 7230 §6.1):
-`Connection`, `Proxy-Connection`, `Keep-Alive`, `Proxy-Authenticate`,
-`Proxy-Authorization`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade` — plus
-every header named in any `Connection` value (comma-separated tokens).
-Exceptions: `TE: trailers` is preserved when the client sent it (gRPC over
-HTTP/1.1), and `Upgrade`/`Connection` survive on a WebSocket handshake
+Before forwarding, the proxy MUST strip the hop-by-hop headers (RFC 7230
+§6.1): `Connection`, `Proxy-Connection`, `Keep-Alive`, `Proxy-Authenticate`,
+`Proxy-Authorization`, `TE`, `Trailer`, `Transfer-Encoding`, and `Upgrade`,
+plus every header named in any `Connection` value (comma-separated tokens).
+Two exceptions: `TE: trailers` is preserved when the client sent it (gRPC
+over HTTP/1.1), and `Upgrade`/`Connection` survive on a WebSocket handshake
 (Part 05 §5). Vectors: Appendix C §3.
 
 hematite MUST NOT add `Via`, `X-Forwarded-For`, or any header revealing the

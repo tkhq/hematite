@@ -5,9 +5,9 @@
 ## 1. Purpose
 
 hematite is a default-deny egress boundary for untrusted workloads. This
-specification defines its observable behavior precisely enough that two
-independent implementations agree byte-for-byte on every policy decision,
-audit record, and wire transformation covered by the test vectors
+specification defines hematite's observable behavior. Two independent
+implementations that follow it MUST agree byte-for-byte on every policy
+decision, audit record, and wire transformation covered by the test vectors
 (Appendix C).
 
 ## 2. Requirement language
@@ -20,7 +20,8 @@ sentence without a requirement keyword is informative.
 One word per concept. These words are used consistently in every part;
 synonyms are defects.
 
-- **workload** — the untrusted client behind the boundary (CI job, agent, container).
+- **workload** — the untrusted program behind the boundary (CI job, agent, container).
+- **client** — the workload in its wire-protocol role: the TCP/TLS/HTTP peer of a listener. The parts say *client* only where the protocol role matters (framing, disconnects, handshakes); everywhere else they say *workload*.
 - **upstream** — the destination server the workload is trying to reach.
 - **operator** — the human or system that authors the configuration.
 - **request summary** — the pure-data description of a request that the policy kernel evaluates (Part 01).
@@ -42,14 +43,13 @@ Levels are cumulative: each level requires everything below it.
 | Level | Name | Requires |
 |-------|------|----------|
 | **L0** | Policy kernel | Parts 01, 02, 03, 04 §1–§2 + §4–§6, 08 §2 (record schema). A pure library: `(config, request summary) → (verdict, traces)`. No network I/O. |
-| **L1** | Forward proxy | L0 + Parts 05 §2 (plain-HTTP and absolute-form listeners), 07, 08, 09. Proxies cleartext HTTP with the guard and audit log. |
+| **L1** | Forward proxy | L0 + Parts 05 §1–§2 and §6 (common handling, the HTTP listener, failure behavior), 07, 08, 09. Proxies cleartext HTTP with the guard and audit log. |
 | **L2** | Transparent boundary | L1 + Parts 05 §3–§5 (TLS MITM, CONNECT, SOCKS5, protocol sniffing), 06 (DNS). The full interception data plane. |
 | **L3** | Secret custody | L2 + Part 04 §3 (secrets transform), sources `env` and `file`. |
 
-An implementation MUST state the highest level it claims and MUST pass
-exactly the Appendix C vectors for the parts that level requires (each vector
-section is level-tagged). Appendix A (the
-acceptance test) requires L3.
+An implementation MUST state the highest level it claims. It MUST pass
+exactly the Appendix C vectors for the parts that level requires; each vector
+section is level-tagged. Appendix A (the acceptance test) requires L3.
 
 ## 5. Type-enforced invariants
 
@@ -61,15 +61,15 @@ arises and names it `INV-n`. The four global ones:
   loggable or serializable form. No audit record, error message, annotation,
   or trace can contain a secret value. (Rust binding: no `Display` or
   `Serialize` impls and no value-revealing `Debug`; Appendix E.)
-- **INV-2 (policy before dial).** No upstream connection may be initiated
-  without the `Continue` proof from the pipeline outcome for that request.
-  (Rust binding: the dialer's entry point consumes the proof value.)
+- **INV-2 (policy before dial).** The proxy MUST NOT initiate an upstream
+  connection without the `Continue` proof from the pipeline outcome for that
+  request. (Rust binding: the dialer's entry point consumes the proof value.)
 - **INV-3 (audit totality).** Every accepted client request — including ones
   that fail mid-flight — MUST emit exactly one audit record.
 - **INV-4 (kernel purity).** Policy evaluation is deterministic: the same
   config and request summary MUST produce the same verdict and the same
-  traces (modulo the `duration_ms` field). This is what makes Appendix C
-  possible.
+  traces (excluding the `duration_ms` field). Determinism is what makes
+  Appendix C possible.
 
 ## 6. Relationship to iron-proxy
 
