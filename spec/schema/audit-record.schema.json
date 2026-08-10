@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hematite.dev/schema/audit-record.schema.json",
+  "title": "hematite audit record (Part 08)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["host", "method", "path", "mode", "action", "duration_ms", "request_transforms", "response_transforms"],
+  "properties": {
+    "host": { "type": "string" },
+    "method": { "type": "string" },
+    "path": { "type": "string" },
+    "remote_addr": { "type": "string" },
+    "sni": { "type": "string" },
+    "mode": { "enum": ["http", "https", "tunnel"] },
+    "action": { "enum": ["allow", "reject", "stub", "error", "client_cancel"] },
+    "status_code": { "type": "integer", "minimum": 100, "maximum": 599 },
+    "duration_ms": { "type": "number", "minimum": 0 },
+    "rejected_by": { "type": "string" },
+    "stubbed_by": { "type": "string" },
+    "error": { "type": "string" },
+    "request_transforms": { "$ref": "#/$defs/traces" },
+    "response_transforms": { "$ref": "#/$defs/traces" },
+    "tunnel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "request_transforms"],
+      "properties": {
+        "target": { "type": "string" },
+        "request_transforms": { "$ref": "#/$defs/traces" }
+      }
+    },
+    "guard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["denied_addr", "prefix"],
+      "properties": {
+        "denied_addr": { "type": "string" },
+        "prefix": { "type": "string" }
+      }
+    },
+    "body_capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request_body", "request_body_truncated"],
+      "properties": {
+        "request_body": { "type": "string" },
+        "request_body_truncated": { "type": "boolean" }
+      }
+    }
+  },
+  "allOf": [
+    { "if": { "properties": { "action": { "const": "reject" } } }, "then": { "required": ["rejected_by"] } },
+    { "if": { "properties": { "action": { "const": "stub" } } }, "then": { "required": ["stubbed_by"] } },
+    { "if": { "properties": { "action": { "const": "error" } } }, "then": { "required": ["error"] } }
+  ],
+  "$defs": {
+    "traces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "verdict", "duration_ms"],
+        "properties": {
+          "name": { "type": "string" },
+          "verdict": { "enum": ["continue", "reject", "stub", "error"] },
+          "duration_ms": { "type": "number", "minimum": 0 },
+          "error": { "type": "string" },
+          "annotations": { "type": "object" }
+        }
+      }
+    }
+  }
+}
