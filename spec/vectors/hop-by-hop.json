@@ -1,0 +1,12 @@
+{
+  "$comment": "Appendix C §3 — Hop-by-hop stripping (Part 07 §3). Conformance: L1 (consumed by hematite-proxy's tests, not the kernel runner). Headers are ordered [name, value] pairs; 'forwarded' is the exact header set after stripping. The websocket case carries a flag because kept-ness depends on a valid Upgrade handshake.",
+  "cases": [
+    { "input": [["Connection", "keep-alive"]], "forwarded": [] },
+    { "input": [["Connection", "close, X-Custom"], ["X-Custom", "1"]], "forwarded": [], "$comment": "Connection-named headers removed too" },
+    { "input": [["TE", "trailers"]], "forwarded": [["TE", "trailers"]] },
+    { "input": [["TE", "gzip, trailers"]], "forwarded": [["TE", "trailers"]] },
+    { "input": [["Transfer-Encoding", "chunked"]], "forwarded": [], "$comment": "framing re-derived by the forwarder" },
+    { "input": [["Proxy-Authorization", "Basic Zm9vOmJhcg=="]], "forwarded": [] },
+    { "input": [["Upgrade", "websocket"]], "forwarded": [["Upgrade", "websocket"]], "valid_websocket_handshake": true }
+  ]
+}

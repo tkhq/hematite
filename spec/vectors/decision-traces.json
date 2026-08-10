@@ -1,0 +1,87 @@
+{
+  "$comment": "Appendix C §4 — Decision traces (Parts 01/03/08). 'pipeline' is the Appendix B transforms section as JSON. Records are compared after removing every duration_ms field (INV-4); status_code, sni, and mode are filled by the conformance harness from the summary and the outcome. The resolver map stubs secret sources by name.",
+  "reject_l0": {
+    "$comment": "Appendix B config with the secrets transform removed. Conformance: L0.",
+    "pipeline": [
+      { "name": "allowlist",
+        "config": { "domains": ["httpbin.org", "*.anthropic.com"], "cidrs": ["172.20.0.0/24"] } },
+      { "name": "annotate",
+        "config": { "annotations": [
+          { "rules": [{ "host": "httpbin.org" }], "headers": ["x-request-id"] } ] } },
+      { "name": "body_capture",
+        "config": { "max_request_body_bytes": 16384,
+          "rules": [{ "host": "httpbin.org", "methods": ["POST"], "paths": ["/anything*"] }] } },
+      { "name": "header_allowlist",
+        "config": { "headers": ["Authorization", "Content-Type", "User-Agent", "Accept", "Host", "/^x-request-.*$/"],
+          "rules": [{ "host": "httpbin.org" }] } }
+    ],
+    "summary": {
+      "mode": "https", "method": "GET", "host": "example.com", "port": 443,
+      "path": "/", "query": "", "sni": "example.com",
+      "headers": [["Host", "example.com"]], "body": ""
+    },
+    "expected_record": {
+      "host": "example.com", "method": "GET", "path": "/", "mode": "https",
+      "sni": "example.com", "action": "reject", "rejected_by": "allowlist",
+      "status_code": 403,
+      "request_transforms": [{ "name": "allowlist", "verdict": "reject" }],
+      "response_transforms": []
+    }
+  },
+  "full_pipeline_l3": {
+    "$comment": "Full Appendix B pipeline, resolver stubbed. Conformance: L3. Additionally, serializing every structure produced here MUST NOT contain forbidden_bytes anywhere.",
+    "resolver": {
+      "OPENAI_API_KEY": "sk-real",
+      "/run/secrets/internal-token": "internal-real"
+    },
+    "forbidden_bytes": "sk-real",
+    "pipeline": [
+      { "name": "allowlist",
+        "config": { "domains": ["httpbin.org", "*.anthropic.com"], "cidrs": ["172.20.0.0/24"] } },
+      { "name": "annotate",
+        "config": { "annotations": [
+          { "rules": [{ "host": "httpbin.org" }], "headers": ["x-request-id"] } ] } },
+      { "name": "body_capture",
+        "config": { "max_request_body_bytes": 16384,
+          "rules": [{ "host": "httpbin.org", "methods": ["POST"], "paths": ["/anything*"] }] } },
+      { "name": "secrets",
+        "config": { "secrets": [
+          { "source": { "type": "env", "var": "OPENAI_API_KEY" },
+            "proxy_value": "proxy-openai-abc123",
+            "match_headers": ["Authorization"],
+            "require": true,
+            "rules": [{ "host": "httpbin.org", "paths": ["/headers"] }] },
+          { "source": { "type": "file", "path": "/run/secrets/internal-token", "ttl": "5m" },
+            "proxy_value": "proxy-internal-tok",
+            "match_headers": [],
+            "rules": [{ "host": "httpbin.org" }] } ] } },
+      { "name": "header_allowlist",
+        "config": { "headers": ["Authorization", "Content-Type", "User-Agent", "Accept", "Host", "/^x-request-.*$/"],
+          "rules": [{ "host": "httpbin.org" }] } }
+    ],
+    "summary": {
+      "mode": "https", "method": "GET", "host": "httpbin.org", "port": 443,
+      "path": "/headers", "query": "", "sni": "httpbin.org",
+      "headers": [["Host", "httpbin.org"], ["Authorization", "Bearer proxy-openai-abc123"]],
+      "body": ""
+    },
+    "expected_record": {
+      "host": "httpbin.org",
+      "method": "GET",
+      "path": "/headers",
+      "mode": "https",
+      "sni": "httpbin.org",
+      "action": "allow",
+      "request_transforms": [
+        { "name": "allowlist", "verdict": "continue" },
+        { "name": "annotate", "verdict": "continue" },
+        { "name": "body_capture", "verdict": "continue" },
+        { "name": "secrets", "verdict": "continue",
+          "annotations": { "swapped": [ { "secret": "OPENAI_API_KEY",
+                                          "locations": ["header:Authorization"] } ] } },
+        { "name": "header_allowlist", "verdict": "continue" }
+      ],
+      "response_transforms": []
+    }
+  }
+}

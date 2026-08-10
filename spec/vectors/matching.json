@@ -1,0 +1,33 @@
+{
+  "$comment": "Appendix C §1 — Matching (Part 02). Conformance: L0. Rows with config_error=true MUST be rejected at config load; for those, host/path is absent.",
+  "domain_globs": [
+    { "pattern": "example.com", "host": "example.com", "match": true },
+    { "pattern": "example.com", "host": "a.example.com", "match": false },
+    { "pattern": "*.example.com", "host": "example.com", "match": true },
+    { "pattern": "*.example.com", "host": "a.example.com", "match": true },
+    { "pattern": "*.example.com", "host": "a.b.example.com", "match": true },
+    { "pattern": "*.example.com", "host": "notexample.com", "match": false },
+    { "pattern": "*.example.com", "host": "example.com.evil.io", "match": false },
+    { "pattern": "*.EXAMPLE.com", "host": "foo.example.COM", "match": true },
+    { "pattern": "ex*.com", "config_error": true, "$comment": "* not leading label" }
+  ],
+  "cidrs": [
+    { "cidr": "10.0.0.0/8", "host": "10.1.2.3", "match": true },
+    { "cidr": "10.0.0.0/8", "host": "11.0.0.1", "match": false },
+    { "cidr": "10.0.0.0/8", "host": "internal.corp", "match": false, "$comment": "hostnames never match CIDRs" },
+    { "cidr": "169.254.169.254/32", "host": "169.254.169.254", "match": true },
+    { "cidr": "10.0.0.1", "config_error": true, "$comment": "bare IP without prefix length" }
+  ],
+  "path_globs": [
+    { "pattern": "/v1/*", "path": "/v1/messages", "match": true },
+    { "pattern": "/v1/*", "path": "/v1/a/b", "match": true, "$comment": "* crosses /" },
+    { "pattern": "/v1/*", "path": "/v2/messages", "match": false },
+    { "pattern": "/v1/messages", "path": "/v1/Messages", "match": false, "$comment": "case-sensitive" },
+    { "pattern": "/bot*/send", "path": "/bot123/send", "match": true }
+  ],
+  "header_names": [
+    { "entry": "Authorization", "header": "authorization", "match": true, "$comment": "forwarded casing preserved" },
+    { "entry": "/^x-.*-key$/", "header": "X-Api-Key", "match": true },
+    { "entry": "/^x-.*-key$/", "header": "X-Api-Keys", "match": false }
+  ]
+}
