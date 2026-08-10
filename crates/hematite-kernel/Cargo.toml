@@ -1,0 +1,14 @@
+# L0 policy kernel (spec Parts 01-03, 04 §1-§2 + §4-§6, 08 §2).
+# Purity is a conformance property (INV-4): no tokio, no I/O, no clock.
+[package]
+name = "hematite-kernel"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+zeroize.workspace = true
