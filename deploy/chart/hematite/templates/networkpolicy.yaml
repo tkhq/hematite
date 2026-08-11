@@ -1,0 +1,50 @@
+{{- if .Values.egressLockdown.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "hematite.fullname" . }}-egress-lockdown
+  labels:
+    {{- include "hematite.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.egressLockdown.podSelector | nindent 6 }}
+  policyTypes: ["Egress"]
+  egress:
+    # Everything goes through hematite...
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "hematite.selectorLabels" . | nindent 14 }}
+      ports:
+        {{- if .Values.service.dns.enabled }}
+        - port: {{ .Values.service.dns.port }}
+          protocol: UDP
+        {{- end }}
+        {{- if .Values.service.http.enabled }}
+        - port: {{ .Values.service.http.port }}
+        {{- end }}
+        {{- if .Values.service.https.enabled }}
+        - port: {{ .Values.service.https.port }}
+        {{- end }}
+        {{- if .Values.service.tunnel.enabled }}
+        - port: {{ .Values.service.tunnel.port }}
+        {{- end }}
+        {{- if .Values.service.management.enabled }}
+        - port: {{ .Values.service.management.port }}
+        {{- end }}
+    # ...except cluster DNS: clients must resolve the hematite Service
+    # name before they can repoint their resolver at it.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+{{- end }}

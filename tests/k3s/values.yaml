@@ -24,6 +24,11 @@ service:
   tunnel: { enabled: true, port: 8080 }
   management: { enabled: true, port: 9092 }
 
+egressLockdown:
+  enabled: true
+  podSelector:
+    app: accept-client
+
 config: |
   dns:
     enabled: true

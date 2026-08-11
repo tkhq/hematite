@@ -29,6 +29,16 @@ assert 'HEMATITE_MANAGEMENT_API_KEY'    "management API key env present"
 assert 'name: hematite-mgmt'            "management key sourced from management.existingSecret"
 assert 'name: OPENAI_API_KEY'           "values.env passthrough renders"
 
+assert 'kind: NetworkPolicy'  "egress lockdown renders when enabled"
+assert 'app: accept-client'   "lockdown selects the configured client pods"
+assert 'k8s-app: kube-dns'    "lockdown allows cluster DNS (bootstrap resolution)"
+
+# Off by default: the chart's own values must NOT render a NetworkPolicy.
+if helm template hematite "$CHART" | grep -q 'kind: NetworkPolicy'; then
+  echo "FAIL: NetworkPolicy rendered with default values (must be opt-in)"; exit 1
+fi
+echo "ok: lockdown is off by default"
+
 # dns.enabled without a pinned clusterIP must refuse to render.
 if helm template hematite "$CHART" -f "$VALUES" --set service.clusterIP="" >/dev/null 2>&1; then
   echo "FAIL: expected render error when service.dns.enabled without service.clusterIP"; exit 1
