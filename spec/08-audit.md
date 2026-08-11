@@ -71,3 +71,14 @@ reference implementation (Appendix E) and behaviorally checked by Appendix C
 
 OTEL export is out of scope for v1 (Part 10). The one-line-JSON format is the
 stable interface; exporters are downstream consumers of it.
+
+## 5. Telemetry redaction rule
+
+Anything not permitted in an audit record is not permitted in a span
+attribute, metric label, or log field. Concretely: resolved secret values
+MUST NOT appear in OTLP span attributes, Prometheus metric labels, or
+structured log fields, for the same reason they must not appear in audit
+records (§3). The `Secret` type's absence of `Display`, `Serialize`, and
+`Clone`-into-`String` enforces this at compile time in the reference
+implementation (Appendix E), exactly as it does for audit records today.
+See Part 09 §5 for the operational telemetry layer that this rule governs.

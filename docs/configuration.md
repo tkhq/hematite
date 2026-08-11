@@ -14,7 +14,7 @@ time. This reference describes every key. For the normative definitions see
 - [A complete example](#a-complete-example)
 - [Load order and environment overrides](#load-order-and-environment-overrides)
 - [Conformance levels: which listeners run](#conformance-levels-which-listeners-run)
-- [`proxy`](#proxy) · [`tls`](#tls) · [`dns`](#dns) · [`management`](#management) · [`log`](#log)
+- [`proxy`](#proxy) · [`tls`](#tls) · [`dns`](#dns) · [`management`](#management) · [`log`](#log) · [`observability`](#observability)
 - [`transforms`](#transforms) — the policy pipeline
 - [Rules and matching](#rules-and-matching)
 - [Reloading](#reloading)
@@ -86,6 +86,17 @@ management:
 
 log:
   level: "info"
+
+observability:
+  metrics:
+    enabled: true           # serve GET /metrics on the management port (default true)
+  log:
+    format: json            # json | text; default json. Operational logs only.
+  otlp:
+    enabled: false          # OTLP trace export; default off
+    endpoint: "http://otel-collector:4318"  # required when enabled
+    sample_ratio: 1.0       # head sampling probability, 0.0–1.0
+    service_name: "hematite"
 ```
 
 The recommended transform order is `allowlist`, `annotate`, `body_capture`,
@@ -114,12 +125,18 @@ the dotted config path, uppercased and joined with `_`, prefixed with
 | `dns.proxy_ip` | `HEMATITE_DNS_PROXY_IP` |
 | `tls.ca_cert` | `HEMATITE_TLS_CA_CERT` |
 | `management.listen` | `HEMATITE_MANAGEMENT_LISTEN` |
+| `observability.metrics.enabled` | `HEMATITE_OBSERVABILITY_METRICS_ENABLED` |
+| `observability.log.format` | `HEMATITE_OBSERVABILITY_LOG_FORMAT` |
+| `observability.otlp.enabled` | `HEMATITE_OBSERVABILITY_OTLP_ENABLED` |
+| `observability.otlp.endpoint` | `HEMATITE_OBSERVABILITY_OTLP_ENDPOINT` |
+| `observability.otlp.sample_ratio` | `HEMATITE_OBSERVABILITY_OTLP_SAMPLE_RATIO` |
+| `observability.otlp.service_name` | `HEMATITE_OBSERVABILITY_OTLP_SERVICE_NAME` |
 
-Overridable keys: everything under `dns`, `proxy`, `tls`, `management`, and
-`log` except the list/structured fields (`dns.passthrough`, `dns.records`,
-`proxy.upstream_deny_cidrs`, and the `transforms` list). Secret **values**
-are never set in config or overrides — only the *name* of the env var or the
-file path is configured (see [`secrets`](#secrets)).
+Overridable keys: everything under `dns`, `proxy`, `tls`, `management`,
+`log`, and `observability` except the list/structured fields (`dns.passthrough`,
+`dns.records`, `proxy.upstream_deny_cidrs`, and the `transforms` list). Secret
+**values** are never set in config or overrides — only the *name* of the env
+var or the file path is configured (see [`secrets`](#secrets)).
 
 ---
 
@@ -265,6 +282,84 @@ See [Reloading](#reloading).
 
 Audit records (one JSON line per request) are always emitted on stderr
 regardless of this setting.
+
+---
+
+## `observability`
+
+Production telemetry: a Prometheus metrics endpoint, structured operational
+logs, and optional OTLP trace export.
+
+### `observability.metrics`
+
+| Key | Type | Default | Env override |
+|---|---|---|---|
+| `enabled` | bool | `true` | `HEMATITE_OBSERVABILITY_METRICS_ENABLED` |
+
+When `enabled` is `true` (the default), `GET /metrics` on the management port
+serves a Prometheus text exposition. When `false`, `GET /metrics` returns 404.
+Requires `management.listen` to be set — there is no standalone metrics port.
+
+Metric counters survive a config reload; the registry is preserved across the
+hot swap.
+
+**Metrics reference:**
+
+| Metric | Type | Labels |
+|---|---|---|
+| `hematite_build_info` | gauge (always 1) | `version` |
+| `hematite_requests_total` | counter | `mode` (`http`/`https`/`tunnel`), `action` (`allow`/`reject`/`stub`/`error`/`client-cancel`), `rejected_by` (transform name, `"listener"`, `"guard"`, or `""`) |
+| `hematite_request_duration_seconds` | histogram | `mode`, `action`; fixed buckets 0.005–30 s |
+| `hematite_upstream_dials_total` | counter | `result` (`ok`/`guard-denied`/`dns-error`/`connect-error`/`tls-error`) |
+| `hematite_dns_queries_total` | counter | `outcome` (`intercept`/`static`/`passthrough`/`error`) |
+| `hematite_tls_leaf_cache_events_total` | counter | `event` (`hit`/`miss`) |
+| `hematite_secrets_swaps_total` | counter | `result` (`swapped`/`missing-required`/`source-error`). No secret-name label. |
+| `hematite_config_reloads_total` | counter | `result` (`ok`/`error`) |
+
+All label values are drawn from closed enums or a fixed transform list —
+cardinality is bounded. Per-host labels are deliberately absent: they would be
+unbounded in cardinality and would leak allowlist traffic patterns through an
+unauthenticated endpoint. Per-host data lives in the audit stream (Part 08).
+
+### `observability.log`
+
+| Key | Type | Default | Env override |
+|---|---|---|---|
+| `format` | `json` or `text` | `json` | `HEMATITE_OBSERVABILITY_LOG_FORMAT` |
+
+Operational log events (startup, bind, reload, shutdown, warnings) are written
+to **stdout** as newline-delimited JSON objects. Each line has `level`,
+`timestamp`, `target`, and `fields.message` at minimum.
+
+Set `format: text` for a compact single-line format in local development.
+
+Audit records are always on **stderr**, unchanged (Part 08). The two streams
+are never interleaved.
+
+### `observability.otlp`
+
+| Key | Type | Default | Env override |
+|---|---|---|---|
+| `enabled` | bool | `false` | `HEMATITE_OBSERVABILITY_OTLP_ENABLED` |
+| `endpoint` | URL | — | `HEMATITE_OBSERVABILITY_OTLP_ENDPOINT` |
+| `sample_ratio` | float | `1.0` | `HEMATITE_OBSERVABILITY_OTLP_SAMPLE_RATIO` |
+| `service_name` | string | `hematite` | `HEMATITE_OBSERVABILITY_OTLP_SERVICE_NAME` |
+
+OTLP trace export is off by default. When enabled, `endpoint` is required —
+boot will fail without it. `endpoint` is the OTLP/HTTP base URL (e.g.
+`http://otel-collector:4318`); the exporter appends `/v1/traces`.
+
+`sample_ratio` is a head-sampling probability in `[0.0, 1.0]`. `1.0` samples
+every request; `0.0` samples nothing. Values outside this range fail at boot.
+
+hematite always creates fresh root spans — it never reads an incoming
+`traceparent` header and never injects one into upstream requests. This is by
+design: the client is untrusted, and forged trace context must not bias
+operator telemetry.
+
+Export uses OTLP/HTTP-protobuf over hyper; no gRPC. Export failures are logged
+(throttled) and do not affect request handling. Shutdown flushes up to 5
+seconds; spans not delivered within that window may be lost.
 
 ---
 

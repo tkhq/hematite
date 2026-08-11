@@ -121,6 +121,37 @@ Secret at `/etc/hematite/tls/` and injects `HEMATITE_TLS_CA_CERT` and
 `HEMATITE_TLS_CA_KEY` so `values.config` can omit the `tls` block entirely.
 The management Secret injects `HEMATITE_MANAGEMENT_API_KEY`.
 
+### Metrics scraping
+
+`GET /metrics` is served on the management port and is auth-exempt. To expose
+it, enable the management Service port:
+
+```yaml
+service:
+  management: { enabled: true, port: 9092 }
+```
+
+In `values.config`, the management listener and metrics should both be on:
+
+```yaml
+management:
+  listen: "127.0.0.1:9092"
+  api_key_env: "HEMATITE_MANAGEMENT_API_KEY"
+
+observability:
+  metrics:
+    enabled: true     # default; can omit
+```
+
+Point your Prometheus or metrics collector at `<pod-ip>:9092/metrics`. The
+exposition contains only aggregate counters and histograms — no per-host
+labels, no per-request identifiers. A locked-down client that can reach the
+management Service port can scrape `/metrics` without a token.
+
+The management Service SHOULD NOT be exposed to untrusted workloads: while
+`/metrics` reveals only aggregate traffic shape, `POST /v1/reload` on the same
+port can reconfigure the proxy (it still requires bearer auth).
+
 ### `env`, `hostAliases`, `extraVolumes`, `extraVolumeMounts`
 
 These are pod-spec passthroughs:
@@ -285,9 +316,11 @@ release. For multi-namespace sandboxes, install one hematite release per
 namespace.
 
 **Note:** If `service.management.enabled` is true, the NetworkPolicy also
-allows locked-down pods to reach the (bearer-auth) management port. Consider
-whether that is appropriate for your threat model before enabling both
-together.
+allows locked-down pods to reach the management port. `GET /metrics` is
+auth-exempt on this port (aggregates only, no per-host data — see the metrics
+cardinality rationale in [`docs/configuration.md`](configuration.md#observabilitymetrics)).
+Consider whether exposing the management port to locked-down pods is
+appropriate for your threat model before enabling both together.
 
 ---
 

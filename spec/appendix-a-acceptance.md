@@ -20,5 +20,6 @@ the records against `spec/schema/audit-record.schema.json`.
 | 8 | Allowlisted hostname whose A record is `169.254.169.254` | 502; `action: reject`, `rejected_by: guard`, `guard: {denied_addr, prefix}` |
 | 9 | Rewrite the config file to add example.com, `POST /v1/reload` (exec'd inside the hematite container — management binds loopback) → repeat step 2 → 200. Rewrite to a broken config, reload → 422, and step 2 still 200 on the surviving config | Atomic swap; fail-closed on bad config |
 | 10 | Sweep all records emitted above | Each validates against the JSON Schema; `grep` for the real secret value across all logs finds nothing |
+| 12 | `GET /metrics` (unauthenticated) on the management port after the steps above | (a) `hematite_requests_total{mode="https",action="reject",rejected_by="allowlist"}` is present with a nonzero count; (b) no hostname string (e.g. `httpbin`) appears anywhere in the exposition output — aggregates only; (c) `POST /v1/reload` without a token still returns 401, confirming auth exemption applies only to `/metrics` |
 
-Pass criterion: all ten, in one run, from a clean start.
+Pass criterion: all steps, in one run, from a clean start.

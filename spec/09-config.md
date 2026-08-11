@@ -6,7 +6,7 @@
 
 One YAML file, one flag: `hematite -config path.yaml`. Full worked example:
 Appendix B. Top-level keys: `dns`, `proxy`, `tls`, `transforms`,
-`management`, `log`. Unknown top-level keys or transform names MUST fail
+`management`, `log`, `observability`. Unknown top-level keys or transform names MUST fail
 validation (typos must not silently no-op — threat T9).
 
 ```yaml
@@ -19,6 +19,10 @@ tls:        { ca_cert, ca_key, cert_cache_size, leaf_cert_expiry_hours }
 transforms: [ { name, config } ]
 management: { listen, api_key_env }
 log:        { level }
+observability:
+  metrics:  { enabled }
+  log:      { format }
+  otlp:     { enabled, endpoint, sample_ratio, service_name }
 ```
 
 ## 2. Load order and defaults
@@ -44,6 +48,11 @@ Defaults:
 | `tls.cert_cache_size` / `leaf_cert_expiry_hours` | 1000 / 72 |
 | `management.api_key_env` | `HEMATITE_MANAGEMENT_API_KEY` |
 | `log.level` | `info` |
+| `observability.metrics.enabled` | `true` |
+| `observability.log.format` | `json` |
+| `observability.otlp.enabled` | `false` |
+| `observability.otlp.sample_ratio` | `1.0` |
+| `observability.otlp.service_name` | `hematite` |
 
 **Defaults and conformance levels.** A section's defaults apply only when
 that section is present: an absent `dns:` block means no DNS server (the
@@ -70,18 +79,80 @@ enforced only when that feature is actually enabled.
   matching `secrets` (Part 04 §6).
 - `proxy_value` MUST be RFC 3986 unreserved-only when `match_path` is set
   (Part 04 §3.2).
+- `observability.otlp.enabled: true` without `observability.otlp.endpoint`
+  MUST fail with: `observability.otlp.endpoint is required when observability.otlp.enabled`.
+- `observability.otlp.sample_ratio` outside `[0.0, 1.0]` MUST fail with:
+  `observability.otlp.sample_ratio must be within 0.0..=1.0`.
+- `observability.log.format` not `"json"` or `"text"` MUST fail with:
+  `observability.log.format must be "json" or "text"`.
 
 ## 4. Management API and reload
 
-Disabled unless `management.listen` is set; SHOULD bind loopback. One
-endpoint:
+Disabled unless `management.listen` is set; SHOULD bind loopback. Two
+endpoints:
 
 - `POST /v1/reload`, authenticated with `Authorization: Bearer <token>`
   compared in constant time. Reload re-reads the config file, builds a
   complete new pipeline plus DNS/TLS state, then swaps atomically
   (Part 03 §1). In-flight requests finish on the old pipeline.
-- Invalid new config → 422 with the validation error; the old config MUST
-  keep serving untouched. Other failures → 500. Success → 200.
-- Reload MUST complete even if the requesting client disconnects.
+  - Invalid new config → 422 with the validation error; the old config MUST
+    keep serving untouched. Other failures → 500. Success → 200.
+  - Reload MUST complete even if the requesting client disconnects.
+- `GET /metrics`, auth-exempt (no `Authorization` header required). Returns
+  the Prometheus text exposition of the metrics registry when
+  `observability.metrics.enabled` is `true` (the default). When
+  `observability.metrics.enabled` is `false`, returns 404. Metrics counters
+  survive a config reload (the registry is preserved across the swap).
 
 Listener addresses are not reloadable in v1: a changed `listen` key is a 422.
+
+## 5. Observability
+
+### 5.1 Structured logs
+
+Operational log events are emitted as one JSON object per line on **stdout**
+when `observability.log.format` is `"json"` (the default). Each line has at
+least the keys `level`, `timestamp`, `target`, and `fields.message`. Set
+`observability.log.format: "text"` for a compact single-line human-readable
+format instead (useful in local development).
+
+Audit records keep their exclusive claim on **stderr**, byte-for-byte as Part
+08 specifies. The two streams MUST NOT be interleaved.
+
+### 5.2 OTLP trace export
+
+When `observability.otlp.enabled` is `true`, hematite exports spans over
+OTLP/HTTP-protobuf to `observability.otlp.endpoint`. No gRPC, no `reqwest`.
+The transport uses the same hyper stack as the proxy's own HTTP client.
+
+Span structure:
+
+- One root span per accepted request: `hematite.request`. This is a
+  **fresh root** — no `traceparent` header is extracted from the incoming
+  request. Incoming trace context is ignored by design: the client is the
+  adversary and forged context MUST NOT bias operator telemetry.
+- Child spans: `dial` (resolve + guard + connect), `tls.mitm` (leaf
+  mint/cache), `upstream` (request → first response byte).
+- The `tls.mitm` span is a per-connection root span, NOT a child of the
+  request span. It covers the MITM leaf mint or cache lookup, which happens
+  at TLS handshake time and is not scoped to any single inner request.
+- Span attributes mirror the audit record's non-secret fields only: method,
+  host, port, path, mode, action, rejected_by, status. `Secret` values
+  MUST NOT appear in span attributes (see Part 08 §3 and the telemetry
+  redaction rule at Part 08 §5).
+- hematite never injects `traceparent` into upstream requests. Header
+  handling is exactly as Part 04 specifies.
+
+Export failures are logged (throttled) and MUST NOT affect request handling.
+Shutdown flushes with a 5-second cap; spans not exported within that window
+may be lost.
+
+When `observability.otlp.enabled` is `false` (the default), no exporter
+runs and no per-request span is created beyond the tracing layer's no-op.
+
+### 5.3 Head sampling
+
+`observability.otlp.sample_ratio` controls head sampling as a probability in
+`[0.0, 1.0]`. A ratio of `1.0` (the default) samples every request. A ratio
+of `0.0` samples nothing. Sampled-out requests incur no span-creation
+overhead.
