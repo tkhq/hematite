@@ -1,0 +1,69 @@
+# Echo upstream (stands in for httpbin.org) and the acceptance client Job.
+# Secrets/ConfigMaps referenced here are created by tests/k3s/run.sh.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo
+  labels: { app: echo }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: echo }
+  template:
+    metadata:
+      labels: { app: echo }
+    spec:
+      containers:
+        - name: echo
+          image: python:3.12-slim
+          command: ["python3", "/echo/echo.py"]
+          ports:
+            - containerPort: 443
+          volumeMounts:
+            - { name: script, mountPath: /echo, readOnly: true }
+            - { name: certs, mountPath: /certs, readOnly: true }
+      volumes:
+        - name: script
+          configMap: { name: echo-script }
+        - name: certs
+          secret: { secretName: echo-certs }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo
+spec:
+  clusterIP: 10.43.200.3
+  selector: { app: echo }
+  ports:
+    - port: 443
+      targetPort: 443
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: accept-client
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: { app: accept-client }   # matched by the egress lockdown
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: client
+          image: accept-client:test
+          imagePullPolicy: Never
+          command: ["/bin/bash", "/scripts/client.sh"]
+          env:
+            - { name: CA, value: /ca/ca.crt }
+            - { name: MGMT_TOKEN, value: reload-token }
+            - { name: ECHO_IP, value: "10.43.200.3" }
+          volumeMounts:
+            - { name: scripts, mountPath: /scripts, readOnly: true }
+            - { name: ca, mountPath: /ca, readOnly: true }
+      volumes:
+        - name: scripts
+          configMap: { name: accept-scripts }
+        - name: ca
+          configMap: { name: accept-ca }

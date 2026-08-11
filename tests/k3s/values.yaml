@@ -29,19 +29,94 @@ egressLockdown:
   podSelector:
     app: accept-client
 
+hostAliases:
+  - ip: "10.43.200.3"            # echo Service (pinned) stands in for httpbin.org
+    hostnames: ["httpbin.org"]
+  - ip: "169.254.169.254"        # guard-denial test (spec step 8)
+    hostnames: ["imds-test.local"]
+
+extraVolumes:
+  - name: internal-token
+    secret:
+      secretName: hematite-internal-token
+extraVolumeMounts:
+  - name: internal-token
+    mountPath: /run/hematite-secrets
+    readOnly: true
+
 config: |
   dns:
     enabled: true
     listen: ":53"
-    proxy_ip: "10.43.200.2"
+    proxy_ip: "10.43.200.2"          # also enforced via HEMATITE_DNS_PROXY_IP
+    upstream_resolver: "1.1.1.1:53"
+    passthrough:
+      - "*.internal.corp"
+      - "*.iana.org"
+    records:
+      - name: "db.internal.corp"
+        type: A
+        value: "10.0.0.9"
+
   proxy:
     http_listen: ":80"
     https_listen: ":443"
     tunnel_listen: ":8080"
+    max_request_body_bytes: 1048576
+
   transforms:
     - name: allowlist
       config:
         domains:
           - "httpbin.org"
+          - "imds-test.local" # upgrade-test-marker
+
+    - name: annotate
+      config:
+        annotations:
+          - rules:
+              - host: "httpbin.org"
+            headers: ["x-request-id"]
+
+    - name: body_capture
+      config:
+        max_request_body_bytes: 16384
+        rules:
+          - host: "httpbin.org"
+            methods: ["POST"]
+            paths: ["/anything*"]
+
+    - name: secrets
+      config:
+        secrets:
+          - source: { type: env, var: OPENAI_API_KEY }
+            proxy_value: "proxy-openai-abc123"
+            match_headers: ["Authorization"]
+            require: true
+            rules:
+              - host: "httpbin.org"
+                paths: ["/headers"]
+          - source: { type: file, path: "/run/hematite-secrets/internal-token" }
+            proxy_value: "proxy-internal-tok"
+            match_headers: []
+            rules:
+              - host: "httpbin.org"
+
+    - name: header_allowlist
+      config:
+        headers:
+          - "Authorization"
+          - "Accept"
+          - "Host"
+          - "User-Agent"
+          - "Content-Type"
+          - "/^x-request-.*$/"
+        rules:
+          - host: "httpbin.org"
+
+  management:
+    listen: "0.0.0.0:9092"
+    api_key_env: "HEMATITE_MANAGEMENT_API_KEY"
+
   log:
     level: "info"
