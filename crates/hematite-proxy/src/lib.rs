@@ -13,6 +13,7 @@ pub mod hop;
 pub mod http;
 pub mod listen;
 pub mod management;
+pub mod metrics;
 pub mod resolver;
 pub mod state;
 pub mod tls;
