@@ -10,6 +10,7 @@ use hematite_kernel::matcher::Cidr;
 use hematite_kernel::pipeline::Pipeline;
 use rustls::ClientConfig;
 
+use crate::metrics::Metrics;
 use crate::tls::CertCache;
 
 /// Part 07 §2 — the post-resolution deny-CIDR check at the dialer.
@@ -80,6 +81,10 @@ pub struct Runtime {
     pub upstream_tls: Arc<ClientConfig>,
     /// Per-hostname leaf cache for the MITM listeners (L2); `None` at L1.
     pub cert_cache: Option<Arc<CertCache>>,
+    /// Metrics registry. Always present (a registry is cheap); the HTTP
+    /// route is gated on `observability.metrics.enabled`. Reused across
+    /// reloads so counters survive a config swap.
+    pub metrics: Arc<Metrics>,
 }
 
 /// Build an upstream TLS client config trusting the OS root store

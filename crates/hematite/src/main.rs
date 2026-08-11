@@ -9,14 +9,18 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use hematite_dns::resolve::{DnsConfig, StaticRecord};
-use hematite_dns::DnsServer;
+use hematite_dns::{DnsDecisionKind, DnsServer};
 use hematite_kernel::matcher::DomainGlob;
 use hematite_proxy::audit::StderrSink;
 use hematite_proxy::config::{build_runtime, load_str, os_env, DnsResolved};
+use hematite_proxy::metrics::{DnsOutcome, MetricsSink};
 use hematite_proxy::state::SharedState;
 
 /// Build and spawn the DNS server (UDP + TCP) from resolved config.
-async fn spawn_dns(dns: &DnsResolved) -> Result<(), String> {
+async fn spawn_dns(
+    dns: &DnsResolved,
+    on_decision: Option<std::sync::Arc<dyn Fn(DnsDecisionKind) + Send + Sync>>,
+) -> Result<(), String> {
     use std::collections::HashMap;
     let mut records = HashMap::new();
     for (name, rtype, value) in &dns.records {
@@ -47,7 +51,11 @@ async fn spawn_dns(dns: &DnsResolved) -> Result<(), String> {
         .upstream_resolver
         .parse()
         .map_err(|_| format!("bad upstream_resolver {:?}", dns.upstream_resolver))?;
-    let server = std::sync::Arc::new(DnsServer::new(config, upstream));
+    let mut server = DnsServer::new(config, upstream);
+    if let Some(cb) = on_decision {
+        server = server.with_on_decision(cb);
+    }
+    let server = std::sync::Arc::new(server);
 
     let udp = tokio::net::UdpSocket::bind(listen_addr(&dns.listen))
         .await
@@ -113,8 +121,14 @@ fn main() -> ExitCode {
         }
     };
     rt.block_on(async move {
+        // The metrics registry lives for the process lifetime; reused on reload.
+        // Extract it before moving `runtime` into `SharedState`.
+        let metrics = runtime.metrics.clone();
         let state = SharedState::new(runtime);
-        let sink = Arc::new(StderrSink);
+        let sink: Arc<dyn hematite_proxy::audit::AuditSink> = Arc::new(MetricsSink {
+            inner: Arc::new(StderrSink),
+            metrics: metrics.clone(),
+        });
 
         let http = match tokio::net::TcpListener::bind(listen_addr(&config.listen.http)).await {
             Ok(l) => l,
@@ -162,9 +176,20 @@ fn main() -> ExitCode {
             }
         }
 
-        // DNS server (L2).
+        // DNS server (L2) — wire in the metrics callback.
         if let Some(dns) = &config.dns {
-            if let Err(e) = spawn_dns(dns).await {
+            let m = metrics.clone();
+            let on_decision: Option<Arc<dyn Fn(DnsDecisionKind) + Send + Sync>> =
+                Some(Arc::new(move |k: DnsDecisionKind| {
+                    let outcome = match k {
+                        DnsDecisionKind::Static => DnsOutcome::Static,
+                        DnsDecisionKind::Intercept => DnsOutcome::Intercept,
+                        DnsDecisionKind::Passthrough => DnsOutcome::Passthrough,
+                        DnsDecisionKind::Error => DnsOutcome::Error,
+                    };
+                    m.inc_dns(outcome);
+                }));
+            if let Err(e) = spawn_dns(dns, on_decision).await {
                 eprintln!("hematite: dns: {e}");
             }
         }
@@ -186,6 +211,8 @@ fn main() -> ExitCode {
                 api_key.clone(),
                 config_path.clone(),
                 config.listen.clone(),
+                metrics.clone(),
+                config.observability.metrics.enabled,
             ));
         }
 

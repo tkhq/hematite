@@ -11,4 +11,4 @@ pub mod server;
 pub mod wire;
 
 pub use resolve::{DnsConfig, StaticRecord};
-pub use server::DnsServer;
+pub use server::{DnsDecisionKind, DnsServer};

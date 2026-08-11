@@ -81,6 +81,7 @@ async fn websocket_upgrade_and_byte_copy() {
         dial_timeout: std::time::Duration::from_secs(5),
         upstream_tls: hematite_proxy::state::native_upstream_config().unwrap(),
         cert_cache: None,
+        metrics: hematite_proxy::metrics::Metrics::new("test"),
     };
     let state = SharedState::new(runtime);
     let sink = Arc::new(TestSink::default());

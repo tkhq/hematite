@@ -16,6 +16,7 @@ use hematite_kernel::config::{build_pipeline_with_resolver, ConfigError, Transfo
 
 use std::sync::Arc;
 
+use crate::metrics::Metrics;
 use crate::resolver::EnvFileResolver;
 use crate::state::{native_upstream_config, Guard, Runtime};
 use crate::tls::{CertCache, SigningCa};
@@ -548,8 +549,20 @@ pub fn load_str(yaml: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Conf
     })
 }
 
-/// Compile a loaded config into a runnable `Runtime`.
+/// Compile a loaded config into a runnable `Runtime` with a fresh metrics
+/// registry. On reload, prefer `build_runtime_with_metrics` to reuse the
+/// existing registry so counters survive the config swap.
 pub fn build_runtime(config: &Config) -> Result<Runtime, LoadError> {
+    let metrics = Metrics::new(env!("CARGO_PKG_VERSION"));
+    build_runtime_with_metrics(config, metrics)
+}
+
+/// Compile a loaded config into a runnable `Runtime`, reusing the supplied
+/// `metrics` registry so counters survive a hot reload (Part 09 §4).
+pub fn build_runtime_with_metrics(
+    config: &Config,
+    metrics: Arc<Metrics>,
+) -> Result<Runtime, LoadError> {
     crate::tls::install_crypto_provider();
     let resolver: Arc<dyn hematite_kernel::secret::SecretResolver> =
         Arc::new(EnvFileResolver::default());
@@ -570,7 +583,9 @@ pub fn build_runtime(config: &Config) -> Result<Runtime, LoadError> {
                 .map_err(|e| LoadError(format!("tls.ca_key {:?}: {e}", tls.ca_key)))?;
             let ca = SigningCa::from_pem(&cert_pem, &key_pem, tls.leaf_cert_expiry_hours)
                 .map_err(|e| LoadError(e.to_string()))?;
-            Some(Arc::new(CertCache::new(Arc::new(ca), tls.cert_cache_size)))
+            let cache = Arc::new(CertCache::new(Arc::new(ca), tls.cert_cache_size));
+            cache.set_metrics(metrics.clone());
+            Some(cache)
         }
         _ => None,
     };
@@ -583,6 +598,7 @@ pub fn build_runtime(config: &Config) -> Result<Runtime, LoadError> {
         dial_timeout: Duration::from_secs(30),
         upstream_tls,
         cert_cache,
+        metrics,
     })
 }
 

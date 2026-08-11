@@ -155,6 +155,7 @@ async fn https_mitm_terminates_and_forwards() {
         dial_timeout: std::time::Duration::from_secs(5),
         upstream_tls: upstream_config_trusting(&ca),
         cert_cache: Some(Arc::new(CertCache::new(ca_signer, 100))),
+        metrics: hematite_proxy::metrics::Metrics::new("test"),
     };
     let state = SharedState::new(runtime);
     let sink = Arc::new(TestSink::default());
@@ -215,6 +216,7 @@ async fn https_no_sni_is_rejected() {
         dial_timeout: std::time::Duration::from_secs(5),
         upstream_tls: upstream_config_trusting(&ca),
         cert_cache: Some(Arc::new(CertCache::new(ca_signer, 100))),
+        metrics: hematite_proxy::metrics::Metrics::new("test"),
     };
     let state = SharedState::new(runtime);
     let sink = Arc::new(TestSink::default());

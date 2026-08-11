@@ -6,6 +6,7 @@ use std::io::Write;
 use hematite_kernel::summary::{Body, Headers, Mode, RequestSummary};
 use hematite_proxy::config::{build_runtime, load_str};
 use hematite_proxy::management::reload;
+use hematite_proxy::metrics::Metrics;
 use hematite_proxy::state::SharedState;
 
 const V1: &str = r#"
@@ -71,19 +72,20 @@ fn reload_swaps_rejects_and_survives() {
     write_config(&path, V1);
     let config = load_str(V1, &no_env).unwrap();
     let state = SharedState::new(build_runtime(&config).unwrap());
+    let metrics = Metrics::new("test");
     assert!(allows(&state, "one.example"));
     assert!(!allows(&state, "two.example"));
 
     // Valid new config → 200, swapped.
     write_config(&path, V2);
-    let (status, _) = reload(&path, &config.listen, &state, &no_env);
+    let (status, _) = reload(&path, &config.listen, &state, &metrics, &no_env);
     assert_eq!(status, 200);
     assert!(allows(&state, "two.example"));
     assert!(!allows(&state, "one.example"));
 
     // Invalid new config → 422; the old (v2) config keeps serving.
     write_config(&path, BROKEN);
-    let (status, message) = reload(&path, &config.listen, &state, &no_env);
+    let (status, message) = reload(&path, &config.listen, &state, &metrics, &no_env);
     assert_eq!(status, 422, "{message}");
     assert!(
         allows(&state, "two.example"),
@@ -92,12 +94,18 @@ fn reload_swaps_rejects_and_survives() {
 
     // Changed listener address → 422.
     write_config(&path, &format!("{V2}\nproxy:\n  http_listen: \":8081\"\n"));
-    let (status, message) = reload(&path, &config.listen, &state, &no_env);
+    let (status, message) = reload(&path, &config.listen, &state, &metrics, &no_env);
     assert_eq!(status, 422, "{message}");
     assert!(message.contains("not reloadable"));
 
     // Unreadable file → 500.
-    let (status, _) = reload(&dir.join("missing.yaml"), &config.listen, &state, &no_env);
+    let (status, _) = reload(
+        &dir.join("missing.yaml"),
+        &config.listen,
+        &state,
+        &metrics,
+        &no_env,
+    );
     assert_eq!(status, 500);
 
     std::fs::remove_dir_all(&dir).ok();

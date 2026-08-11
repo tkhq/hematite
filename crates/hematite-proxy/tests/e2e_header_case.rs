@@ -69,6 +69,7 @@ async fn forwarded_header_name_casing_is_preserved() {
         dial_timeout: std::time::Duration::from_secs(5),
         upstream_tls: hematite_proxy::state::native_upstream_config().unwrap(),
         cert_cache: None,
+        metrics: hematite_proxy::metrics::Metrics::new("test"),
     };
     let state = SharedState::new(runtime);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

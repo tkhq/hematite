@@ -12,7 +12,8 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
-use crate::config::{build_runtime, load_str, ListenKeys};
+use crate::config::{build_runtime_with_metrics, load_str, ListenKeys};
+use crate::metrics::Metrics;
 use crate::state::SharedState;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -41,57 +42,75 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// The reload decision, separated from HTTP for testability.
-/// Returns (status, message).
+/// Returns (status, message). Reuses `metrics` so counters survive the swap.
 pub fn reload(
     config_path: &std::path::Path,
     current_listen: &ListenKeys,
     state: &SharedState,
+    metrics: &Arc<Metrics>,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> (u16, String) {
     // Other failures → 500 (Part 09 §4): the file being unreadable is not
     // a validation error.
     let yaml = match std::fs::read_to_string(config_path) {
         Ok(y) => y,
-        Err(e) => return (500, format!("cannot read config: {e}")),
+        Err(e) => {
+            metrics.inc_reload(false);
+            return (500, format!("cannot read config: {e}"));
+        }
     };
     // Invalid new config → 422; the old config keeps serving untouched.
     let config = match load_str(&yaml, env) {
         Ok(c) => c,
-        Err(e) => return (422, e.to_string()),
+        Err(e) => {
+            metrics.inc_reload(false);
+            return (422, e.to_string());
+        }
     };
     if config.listen != *current_listen {
+        metrics.inc_reload(false);
         return (
             422,
             "listener addresses are not reloadable in v1 (Part 09 §4)".into(),
         );
     }
-    match build_runtime(&config) {
+    match build_runtime_with_metrics(&config, metrics.clone()) {
         Ok(runtime) => {
             state.swap(runtime);
+            metrics.inc_reload(true);
             (200, "reloaded".into())
         }
-        Err(e) => (422, e.to_string()),
+        Err(e) => {
+            metrics.inc_reload(false);
+            (422, e.to_string())
+        }
     }
 }
 
 /// Serve the management listener. `api_key` was validated non-empty at
-/// boot (Part 09 §3).
+/// boot (Part 09 §3). `GET /metrics` is auth-exempt; all other routes
+/// require bearer auth. When `metrics_enabled` is false, `GET /metrics`
+/// returns 404 instead.
 pub async fn serve_management(
     listener: TcpListener,
     state: SharedState,
     api_key: String,
     config_path: PathBuf,
     current_listen: ListenKeys,
+    metrics: Arc<Metrics>,
+    metrics_enabled: bool,
 ) -> std::io::Result<()> {
     let api_key = Arc::new(api_key);
     let current_listen = Arc::new(current_listen);
     let config_path = Arc::new(config_path);
+    let metrics = Arc::new(metrics);
     loop {
         let (stream, _remote) = listener.accept().await?;
         let state = state.clone();
         let api_key = api_key.clone();
         let current_listen = current_listen.clone();
         let config_path = config_path.clone();
+        let metrics = metrics.clone();
         tokio::spawn(async move {
             let io = TokioIo::new(stream);
             let service = service_fn(move |req: Request<hyper::body::Incoming>| {
@@ -99,7 +118,19 @@ pub async fn serve_management(
                 let api_key = api_key.clone();
                 let current_listen = current_listen.clone();
                 let config_path = config_path.clone();
+                let metrics = metrics.clone();
                 async move {
+                    // GET /metrics — auth-exempt; gated on metrics_enabled.
+                    if req.method() == hyper::Method::GET && req.uri().path() == "/metrics" {
+                        if !metrics_enabled {
+                            return Ok::<_, std::convert::Infallible>(text(
+                                StatusCode::NOT_FOUND,
+                                "not found",
+                            ));
+                        }
+                        return Ok(text(StatusCode::OK, &metrics.render()));
+                    }
+
                     if req.method() != hyper::Method::POST || req.uri().path() != "/v1/reload" {
                         return Ok::<_, std::convert::Infallible>(text(
                             StatusCode::NOT_FOUND,
@@ -123,6 +154,7 @@ pub async fn serve_management(
                             &config_path,
                             &current_listen,
                             &state,
+                            &metrics,
                             &crate::config::os_env,
                         )
                     });

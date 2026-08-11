@@ -12,6 +12,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
+use crate::metrics::DialResult;
 use crate::state::Runtime;
 
 /// Any bidirectional upstream stream (plaintext TCP or TLS).
@@ -44,12 +45,18 @@ pub async fn connect_upstream(
     let addrs: Vec<std::net::SocketAddr> = if let Ok(ip) = host.parse::<IpAddr>() {
         vec![(ip, port).into()]
     } else {
-        tokio::net::lookup_host((host, port))
-            .await
-            .map_err(|e| DialError::Failed(format!("resolution failed for {host:?}: {e}")))?
-            .collect()
+        match tokio::net::lookup_host((host, port)).await {
+            Ok(iter) => iter.collect(),
+            Err(e) => {
+                runtime.metrics.inc_dial(DialResult::DnsError);
+                return Err(DialError::Failed(format!(
+                    "resolution failed for {host:?}: {e}"
+                )));
+            }
+        }
     };
     if addrs.is_empty() {
+        runtime.metrics.inc_dial(DialResult::DnsError);
         return Err(DialError::Failed(format!("no addresses for {host:?}")));
     }
 
@@ -57,7 +64,10 @@ pub async fn connect_upstream(
     for addr in addrs {
         // Guard is enforced against the exact IP being dialed; a denial
         // fails the request (no fall-through past a denied address).
-        runtime.guard.check(addr.ip()).map_err(DialError::Denied)?;
+        if let Err(denial) = runtime.guard.check(addr.ip()) {
+            runtime.metrics.inc_dial(DialResult::GuardDenied);
+            return Err(DialError::Denied(denial));
+        }
         let tcp = match tokio::time::timeout(runtime.dial_timeout, TcpStream::connect(addr)).await {
             Ok(Ok(stream)) => stream,
             Ok(Err(e)) => {
@@ -70,16 +80,24 @@ pub async fn connect_upstream(
             }
         };
         if !scheme_https {
+            runtime.metrics.inc_dial(DialResult::Ok);
             return Ok(Box::new(tcp));
         }
         let connector = TlsConnector::from(runtime.upstream_tls.clone());
         let server_name = ServerName::try_from(host.to_string())
             .map_err(|_| DialError::Failed(format!("invalid upstream server name {host:?}")))?;
         match connector.connect(server_name, tcp).await {
-            Ok(tls) => return Ok(Box::new(tls)),
-            Err(e) => return Err(DialError::Failed(format!("upstream TLS: {e}"))),
+            Ok(tls) => {
+                runtime.metrics.inc_dial(DialResult::Ok);
+                return Ok(Box::new(tls));
+            }
+            Err(e) => {
+                runtime.metrics.inc_dial(DialResult::TlsError);
+                return Err(DialError::Failed(format!("upstream TLS: {e}")));
+            }
         }
     }
+    runtime.metrics.inc_dial(DialResult::ConnectError);
     Err(DialError::Failed(
         last_err.unwrap_or_else(|| "dial failed".into()),
     ))

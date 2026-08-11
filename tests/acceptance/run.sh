@@ -79,6 +79,14 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -XPOST -H "Authorization: Bearer $
 code=$(curl -s -o /dev/null -w '%{http_code}' -XPOST -H 'Authorization: Bearer wrong' http://"$PROXY":9092/v1/reload)
 [ "$code" = 401 ] && ok "bad token 401" || bad "expected 401, got $code"
 
+step 12 "metrics: unauthenticated scrape, counts, no hostnames"
+metrics=$(curl -s http://"$PROXY":9092/metrics)
+echo "$metrics" | grep -q 'hematite_requests_total{mode="https",action="reject",rejected_by="allowlist"}' \
+  && ok "reject count present" || bad "missing reject counter"
+echo "$metrics" | grep -q 'httpbin' && bad "hostname leaked into metrics" || ok "no hostnames"
+code=$(curl -s -o /dev/null -w '%{http_code}' -XPOST http://"$PROXY":9092/v1/reload)
+[ "$code" = 401 ] && ok "reload still requires auth" || bad "expected 401, got $code"
+
 echo
 if [ "$fail" = 0 ]; then echo "ACCEPTANCE: PASS"; else echo "ACCEPTANCE: FAIL"; fi
 exit $fail

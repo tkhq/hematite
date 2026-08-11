@@ -12,6 +12,8 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::metrics::Metrics;
+
 use lru::LruCache;
 use rcgen::{
     Certificate, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, Ia5String,
@@ -168,6 +170,8 @@ pub struct CertCache {
     cache: Mutex<LruCache<String, Arc<ServerConfig>>>,
     /// In-flight mints, so concurrent misses for one target mint once.
     inflight: Mutex<HashMap<String, watch::Receiver<Option<Arc<ServerConfig>>>>>,
+    /// Metrics registry, set after construction via `set_metrics`.
+    metrics: Mutex<Option<Arc<Metrics>>>,
 }
 
 impl CertCache {
@@ -177,12 +181,21 @@ impl CertCache {
             ca,
             cache: Mutex::new(LruCache::new(capacity)),
             inflight: Mutex::new(HashMap::new()),
+            metrics: Mutex::new(None),
         }
+    }
+
+    /// Attach a metrics registry for hit/miss instrumentation.
+    pub fn set_metrics(&self, m: Arc<Metrics>) {
+        *self.metrics.lock().expect("metrics lock") = Some(m);
     }
 
     /// Get or mint the `ServerConfig` for `target`.
     pub async fn get(&self, target: &str) -> Result<Arc<ServerConfig>, TlsError> {
         if let Some(hit) = self.cache.lock().expect("cache lock").get(target).cloned() {
+            if let Some(m) = self.metrics.lock().expect("metrics lock").as_ref() {
+                m.inc_tls_cache(true);
+            }
             return Ok(hit);
         }
         // Single-flight: either become the minter or await the in-flight one.
@@ -204,6 +217,9 @@ impl CertCache {
 
         match role {
             Role::Await(mut rx) => {
+                if let Some(m) = self.metrics.lock().expect("metrics lock").as_ref() {
+                    m.inc_tls_cache(false);
+                }
                 // Wait for the minter to publish.
                 while rx.borrow().is_none() {
                     if rx.changed().await.is_err() {
@@ -214,6 +230,9 @@ impl CertCache {
                 value.ok_or_else(|| TlsError(format!("mint failed for {target:?}")))
             }
             Role::Mint(tx) => {
+                if let Some(m) = self.metrics.lock().expect("metrics lock").as_ref() {
+                    m.inc_tls_cache(false);
+                }
                 let result = self.ca.mint(target).and_then(|leaf| leaf.server_config());
                 let published = match result {
                     Ok(config) => {

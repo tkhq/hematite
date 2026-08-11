@@ -14,9 +14,25 @@ use crate::wire::{build_empty_noerror, build_response, build_servfail, parse_que
 
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Outcome of a DNS decision, for metrics instrumentation.
+/// Defined here (no proxy-crate dependency) and converted to `DnsOutcome`
+/// on the proxy side via `From<DnsDecisionKind>`.
+#[derive(Debug, Clone, Copy)]
+pub enum DnsDecisionKind {
+    /// Query answered from an operator-configured static record.
+    Static,
+    /// Query intercepted and answered with the proxy's IP (or EmptyNoError).
+    Intercept,
+    /// Query forwarded to the upstream resolver (passthrough zone).
+    Passthrough,
+    /// Forward or send error (SERVFAIL sent to client).
+    Error,
+}
+
 pub struct DnsServer {
     config: Arc<DnsConfig>,
     upstream_resolver: SocketAddr,
+    on_decision: Option<Arc<dyn Fn(DnsDecisionKind) + Send + Sync>>,
 }
 
 impl DnsServer {
@@ -24,7 +40,15 @@ impl DnsServer {
         DnsServer {
             config: Arc::new(config),
             upstream_resolver,
+            on_decision: None,
         }
+    }
+
+    /// Attach a decision callback for metrics instrumentation. Called once
+    /// per resolved query (after the decision is made, before I/O).
+    pub fn with_on_decision(mut self, cb: Arc<dyn Fn(DnsDecisionKind) + Send + Sync>) -> Self {
+        self.on_decision = Some(cb);
+        self
     }
 
     /// Produce the response bytes for a request, performing passthrough
@@ -32,11 +56,51 @@ impl DnsServer {
     pub async fn respond(&self, request: &[u8]) -> Option<Vec<u8>> {
         let query = parse_query(request)?;
         match resolve(&self.config, &query) {
-            Decision::Answer(answers) => Some(build_response(&query, &answers, true)),
-            Decision::EmptyNoError => Some(build_empty_noerror(&query, true)),
+            Decision::Answer(answers) => {
+                // Distinguish static records from intercept answers.
+                let kind = if self
+                    .config
+                    .records
+                    .contains_key(query.name.strip_suffix('.').unwrap_or(&query.name))
+                {
+                    DnsDecisionKind::Static
+                } else {
+                    DnsDecisionKind::Intercept
+                };
+                if let Some(cb) = &self.on_decision {
+                    cb(kind);
+                }
+                Some(build_response(&query, &answers, true))
+            }
+            Decision::EmptyNoError => {
+                // EmptyNoError is emitted for both static and intercept paths.
+                let kind = if self
+                    .config
+                    .records
+                    .contains_key(query.name.strip_suffix('.').unwrap_or(&query.name))
+                {
+                    DnsDecisionKind::Static
+                } else {
+                    DnsDecisionKind::Intercept
+                };
+                if let Some(cb) = &self.on_decision {
+                    cb(kind);
+                }
+                Some(build_empty_noerror(&query, true))
+            }
             Decision::Passthrough => match self.forward(request).await {
-                Some(response) => Some(response),
-                None => Some(build_servfail(&query)),
+                Some(response) => {
+                    if let Some(cb) = &self.on_decision {
+                        cb(DnsDecisionKind::Passthrough);
+                    }
+                    Some(response)
+                }
+                None => {
+                    if let Some(cb) = &self.on_decision {
+                        cb(DnsDecisionKind::Error);
+                    }
+                    Some(build_servfail(&query))
+                }
             },
         }
     }
