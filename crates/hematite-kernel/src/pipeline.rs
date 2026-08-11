@@ -163,3 +163,76 @@ fn trace(
 ) -> Trace {
     Trace { name: name.to_string(), verdict, duration_ms: 0.0, error, annotations }
 }
+
+/// What the response path decided (Part 03 §2–§3).
+pub enum ResponseAction {
+    /// Relay the upstream response.
+    Forward,
+    /// Response-path `Reject`/`Stub` replaces the upstream response with
+    /// the transform-supplied one (an empty 403 for a bare `Reject`).
+    Replace { by: String, response: Response, stub: bool },
+    /// A response transform failed; the proxy returns 502 (fail closed).
+    Error { by: String, message: String },
+}
+
+pub struct ResponseOutcome {
+    pub traces: Vec<Trace>,
+    pub action: ResponseAction,
+}
+
+impl Pipeline {
+    /// The response path: after the upstream responds, run every transform
+    /// in the **same** order (Part 03 §2); short-circuit as on the request
+    /// path. All five v1 transforms are no-ops here.
+    pub fn evaluate_response(&self, req: &RequestSummary) -> ResponseOutcome {
+        let mut traces = Vec::with_capacity(self.transforms.len());
+        for t in &self.transforms {
+            let mut ctx = Ctx::default();
+            match t.on_response(&mut ctx, req) {
+                Ok(Verdict::Continue) => {
+                    traces.push(trace(t.name(), TraceVerdict::Continue, None, ctx.annotations));
+                }
+                Ok(Verdict::Reject(response)) => {
+                    traces.push(trace(t.name(), TraceVerdict::Reject, None, ctx.annotations));
+                    let response = response.unwrap_or(Response {
+                        status: 403,
+                        headers: Vec::new(),
+                        body: Vec::new(),
+                    });
+                    return ResponseOutcome {
+                        traces,
+                        action: ResponseAction::Replace {
+                            by: t.name().to_string(),
+                            response,
+                            stub: false,
+                        },
+                    };
+                }
+                Ok(Verdict::Stub(response)) => {
+                    traces.push(trace(t.name(), TraceVerdict::Stub, None, ctx.annotations));
+                    return ResponseOutcome {
+                        traces,
+                        action: ResponseAction::Replace {
+                            by: t.name().to_string(),
+                            response,
+                            stub: true,
+                        },
+                    };
+                }
+                Err(TransformError(message)) => {
+                    traces.push(trace(
+                        t.name(),
+                        TraceVerdict::Error,
+                        Some(message.clone()),
+                        ctx.annotations,
+                    ));
+                    return ResponseOutcome {
+                        traces,
+                        action: ResponseAction::Error { by: t.name().to_string(), message },
+                    };
+                }
+            }
+        }
+        ResponseOutcome { traces, action: ResponseAction::Forward }
+    }
+}

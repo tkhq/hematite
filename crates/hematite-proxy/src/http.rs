@@ -1,0 +1,527 @@
+//! Part 05 §1–§2 and §6 — common request handling, the HTTP listener
+//! (origin-form and absolute-form), and failure behavior.
+//!
+//! L1 deviations (documented, revisited at L2): hyper canonicalizes header
+//! names to lowercase, so original wire casing of names is not preserved
+//! through this listener; WebSocket upgrade is L2 and not served here.
+
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+use std::time::Instant;
+
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full};
+use hyper::body::{Body as HyperBody, Frame, Incoming};
+use hyper::service::service_fn;
+use hyper::{Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
+use tokio::net::TcpListener;
+
+use hematite_kernel::audit::{Action, AuditRecord};
+use hematite_kernel::pipeline::{Outcome, PipelineOutcome, ResponseAction};
+use hematite_kernel::summary::{Body, Headers, Mode, RequestSummary};
+
+use crate::audit::{AuditSink, PendingAudit};
+use crate::dial::{dial_upstream, DialError};
+use crate::hop::strip_hop_by_hop;
+use crate::state::SharedState;
+
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+type OutBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
+
+fn empty_body() -> OutBody {
+    Full::new(Bytes::new()).map_err(|e| match e {}).boxed()
+}
+
+fn bytes_body(bytes: Vec<u8>) -> OutBody {
+    Full::new(Bytes::from(bytes)).map_err(|e| match e {}).boxed()
+}
+
+/// Serve the plain-HTTP listener until the socket closes.
+pub async fn serve_http(
+    listener: TcpListener,
+    state: SharedState,
+    sink: Arc<dyn AuditSink>,
+) -> std::io::Result<()> {
+    loop {
+        let (stream, remote) = listener.accept().await?;
+        let state = state.clone();
+        let sink = sink.clone();
+        tokio::spawn(async move {
+            let io = TokioIo::new(stream);
+            let service = service_fn(move |req| {
+                handle(req, state.clone(), sink.clone(), remote.to_string())
+            });
+            let _ = hyper::server::conn::http1::Builder::new()
+                .half_close(true)
+                .serve_connection(io, service)
+                .await;
+        });
+    }
+}
+
+/// `host[:port]` → (lowercase hostname, port). Handles bracketed IPv6.
+fn split_host_port(s: &str) -> (String, Option<u16>) {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix('[') {
+        if let Some(end) = rest.find(']') {
+            let host = rest[..end].to_ascii_lowercase();
+            let port = rest[end + 1..].strip_prefix(':').and_then(|p| p.parse().ok());
+            return (host, port);
+        }
+    }
+    match s.rsplit_once(':') {
+        // A second ':' means an unbracketed IPv6 literal, not a port.
+        Some((h, p)) if !h.contains(':') => (h.to_ascii_lowercase(), p.parse().ok()),
+        _ => (s.to_ascii_lowercase(), None),
+    }
+}
+
+/// Percent-decode one path segment (invalid escapes pass through).
+fn percent_decode(segment: &str) -> Vec<u8> {
+    let bytes = segment.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if let Some(hex) = bytes.get(i + 1..i + 3) {
+                if let Ok(byte) = u8::from_str_radix(std::str::from_utf8(hex).unwrap_or("zz"), 16) {
+                    out.push(byte);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Part 01 §1 / Part 05 §1 step 2 — reject `.` / `..` segments, checked on
+/// the percent-decoded segments (threat T6).
+fn has_dot_segment(path: &str) -> bool {
+    path.split('/').any(|seg| {
+        let decoded = percent_decode(seg);
+        decoded == b"." || decoded == b".."
+    })
+}
+
+/// Forward body: the buffered prefix chained with the unread remainder of
+/// the client stream (the over-cap path of Part 01 §4).
+struct ChainBody {
+    prefix: Option<Bytes>,
+    inner: Pin<Box<Incoming>>,
+}
+
+impl HyperBody for ChainBody {
+    type Data = Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        if let Some(prefix) = self.prefix.take() {
+            return Poll::Ready(Some(Ok(Frame::data(prefix))));
+        }
+        self.inner
+            .as_mut()
+            .poll_frame(cx)
+            .map(|opt| opt.map(|res| res.map_err(|e| Box::new(e) as BoxError)))
+    }
+}
+
+struct Target {
+    host: String,
+    port: u16,
+    path: String,
+    query: String,
+}
+
+enum TargetError {
+    /// 400 with the given reason; `host` may be empty (pre-extraction).
+    Bad { reason: &'static str, host: String },
+}
+
+fn extract_target(req: &Request<Incoming>) -> Result<Target, TargetError> {
+    let uri = req.uri();
+    let host_header = req
+        .headers()
+        .get(hyper::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(split_host_port);
+
+    let (host, port) = if let Some(authority) = uri.authority() {
+        // Absolute-form: target from the request-target, which MUST agree
+        // with the Host header (Part 05 §2); hostnames compared, ports
+        // ignored (the SNI/Host precedent, Part 05 §1).
+        let host = authority.host().to_ascii_lowercase();
+        let port = authority.port_u16().unwrap_or(80);
+        match &host_header {
+            Some((h, _)) if *h == host => {}
+            Some(_) => {
+                return Err(TargetError::Bad {
+                    reason: "absolute-form target disagrees with Host header",
+                    host,
+                })
+            }
+            None => {
+                return Err(TargetError::Bad { reason: "missing Host header", host })
+            }
+        }
+        (host, port)
+    } else {
+        match &host_header {
+            Some((h, p)) if !h.is_empty() => (h.clone(), p.unwrap_or(80)),
+            _ => {
+                return Err(TargetError::Bad {
+                    reason: "missing or empty Host header",
+                    host: String::new(),
+                })
+            }
+        }
+    };
+
+    Ok(Target {
+        host,
+        port,
+        path: uri.path().to_string(),
+        query: uri.query().unwrap_or("").to_string(),
+    })
+}
+
+fn base_record(
+    host: &str,
+    method: &str,
+    path: &str,
+    remote_addr: &str,
+    action: Action,
+) -> AuditRecord {
+    AuditRecord {
+        host: host.to_string(),
+        method: method.to_string(),
+        path: path.to_string(),
+        remote_addr: Some(remote_addr.to_string()),
+        sni: None,
+        mode: Mode::Http,
+        action,
+        status_code: None,
+        duration_ms: 0.0,
+        rejected_by: None,
+        stubbed_by: None,
+        error: None,
+        request_transforms: Vec::new(),
+        response_transforms: Vec::new(),
+        tunnel: None,
+        guard: None,
+        body_capture: None,
+    }
+}
+
+async fn handle(
+    req: Request<Incoming>,
+    state: SharedState,
+    sink: Arc<dyn AuditSink>,
+    remote_addr: String,
+) -> Result<Response<OutBody>, BoxError> {
+    let runtime = state.current();
+    let started = Instant::now();
+    let mut pending = PendingAudit::new(sink, Some(remote_addr.clone()));
+    let method = req.method().as_str().to_string();
+
+    // Part 05 §1 steps 1–2.
+    let target = match extract_target(&req) {
+        Ok(t) => t,
+        Err(TargetError::Bad { reason, host }) => {
+            let mut record = base_record(&host, &method, req.uri().path(), &remote_addr, Action::Reject);
+            record.rejected_by = Some("listener".into());
+            record.status_code = Some(400);
+            record.error = None;
+            record.duration_ms = ms_since(started);
+            pending.emit(&record);
+            let _ = reason;
+            return Ok(status_response(StatusCode::BAD_REQUEST));
+        }
+    };
+    if has_dot_segment(&target.path) {
+        let mut record =
+            base_record(&target.host, &method, &target.path, &remote_addr, Action::Reject);
+        record.rejected_by = Some("listener".into());
+        record.status_code = Some(400);
+        record.duration_ms = ms_since(started);
+        pending.emit(&record);
+        return Ok(status_response(StatusCode::BAD_REQUEST));
+    }
+
+    // Headers, wire order preserved (names arrive lowercased from hyper).
+    let header_pairs: Vec<(String, String)> = req
+        .headers()
+        .iter()
+        .map(|(n, v)| (n.as_str().to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned()))
+        .collect();
+
+    // Part 01 §4 — buffer up to the cap; over-cap bodies keep the unread
+    // remainder for streaming forward.
+    let cap = runtime.max_request_body_bytes;
+    let (_parts, mut incoming) = req.into_parts();
+    let mut buffered: Vec<u8> = Vec::new();
+    let mut over_cap = false;
+    loop {
+        if buffered.len() > cap {
+            over_cap = true;
+            break;
+        }
+        match incoming.frame().await {
+            None => break,
+            Some(Ok(frame)) => {
+                if let Some(data) = frame.data_ref() {
+                    buffered.extend_from_slice(data);
+                }
+            }
+            Some(Err(_)) => {
+                // Client disconnect mid-request (Part 05 §6): no usable
+                // response; audit `client_cancel`.
+                let mut record =
+                    base_record(&target.host, &method, &target.path, &remote_addr, Action::ClientCancel);
+                record.duration_ms = ms_since(started);
+                pending.emit(&record);
+                return Ok(status_response(StatusCode::BAD_REQUEST));
+            }
+        }
+    }
+
+    let kernel_body = if over_cap {
+        Body::new(buffered[..cap.min(buffered.len())].to_vec(), true)
+    } else {
+        Body::new(buffered.clone(), false)
+    };
+
+    let mut summary = RequestSummary {
+        mode: Mode::Http,
+        method: method.clone(),
+        host: target.host.clone(),
+        port: target.port,
+        path: target.path.clone(),
+        query: target.query.clone(),
+        headers: Headers::new(header_pairs),
+        body: kernel_body,
+        sni: None,
+        remote_addr: Some(remote_addr.clone()),
+    };
+
+    // Part 05 §1 step 4 — run the pipeline.
+    let PipelineOutcome { outcome, request_traces, body_capture } =
+        runtime.pipeline.evaluate_request(&mut summary);
+
+    // A record template carrying everything the request path produced.
+    let mut record = base_record(&summary.host, &method, &summary.path, &remote_addr, Action::Allow);
+    record.request_transforms = request_traces;
+    record.body_capture = body_capture;
+
+    let proof = match outcome {
+        Outcome::Reject { by, response } => {
+            record.action = Action::Reject;
+            record.status_code = Some(response.as_ref().map(|r| r.status).unwrap_or(403));
+            record.rejected_by = Some(by);
+            record.duration_ms = ms_since(started);
+            pending.emit(&record);
+            return Ok(match response {
+                Some(r) => build_response(r),
+                None => status_response(StatusCode::FORBIDDEN),
+            });
+        }
+        Outcome::Stub { by, response } => {
+            record.action = Action::Stub;
+            record.status_code = Some(response.status);
+            record.stubbed_by = Some(by);
+            record.duration_ms = ms_since(started);
+            pending.emit(&record);
+            return Ok(build_response(response));
+        }
+        Outcome::Error { by: _, message } => {
+            record.action = Action::Error;
+            record.status_code = Some(502);
+            record.error = Some(message);
+            record.duration_ms = ms_since(started);
+            pending.emit(&record);
+            return Ok(status_response(StatusCode::BAD_GATEWAY));
+        }
+        Outcome::Continue(proof) => proof,
+    };
+
+    // Part 07 — dial with the guard.
+    let stream = match dial_upstream(proof, &summary.host, summary.port, &runtime).await {
+        Ok(s) => s,
+        Err(DialError::Denied(denial)) => {
+            record.action = Action::Reject;
+            record.rejected_by = Some("guard".into());
+            record.status_code = Some(502);
+            record.guard = Some(denial);
+            record.duration_ms = ms_since(started);
+            pending.emit(&record);
+            return Ok(status_response(StatusCode::BAD_GATEWAY));
+        }
+        Err(DialError::Failed(message)) => {
+            record.action = Action::Error;
+            record.status_code = Some(502);
+            record.error = Some(message);
+            record.duration_ms = ms_since(started);
+            pending.emit(&record);
+            return Ok(status_response(StatusCode::BAD_GATEWAY));
+        }
+    };
+
+    // Part 07 §3 — header hygiene (WebSocket preservation is L2).
+    let mut out_headers: Vec<(String, String)> =
+        summary.headers.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect();
+    strip_hop_by_hop(&mut out_headers, false);
+    if !over_cap {
+        // Buffered body forwards with an exact Content-Length re-derived
+        // from the (possibly rewritten) bytes (Part 01 §4).
+        out_headers.retain(|(n, _)| !n.eq_ignore_ascii_case("content-length"));
+    }
+
+    let path_and_query = if summary.query.is_empty() {
+        summary.path.clone()
+    } else {
+        format!("{}?{}", summary.path, summary.query)
+    };
+    let mut builder = Request::builder().method(summary.method.as_str()).uri(path_and_query);
+    for (name, value) in &out_headers {
+        builder = builder.header(name.as_str(), value.as_str());
+    }
+    let out_body: OutBody = if over_cap {
+        ChainBody {
+            prefix: Some(Bytes::from(buffered)),
+            inner: Box::pin(incoming),
+        }
+        .boxed()
+    } else {
+        bytes_body(summary.body.read().to_vec())
+    };
+    let upstream_req = match builder.body(out_body) {
+        Ok(r) => r,
+        Err(e) => {
+            record.action = Action::Error;
+            record.status_code = Some(502);
+            record.error = Some(format!("building upstream request: {e}"));
+            record.duration_ms = ms_since(started);
+            pending.emit(&record);
+            return Ok(status_response(StatusCode::BAD_GATEWAY));
+        }
+    };
+
+    // Send; the response-header timeout covers time-to-headers (Part 07 §4).
+    let upstream_response = match send_upstream(
+        stream,
+        upstream_req,
+        runtime.upstream_response_header_timeout,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(message) => {
+            record.action = Action::Error;
+            record.status_code = Some(502);
+            record.error = Some(message);
+            record.duration_ms = ms_since(started);
+            pending.emit(&record);
+            return Ok(status_response(StatusCode::BAD_GATEWAY));
+        }
+    };
+
+    // Response path (Part 03 §2) — all v1 transforms are no-ops, but the
+    // traces are recorded and Reject/Stub/error semantics hold.
+    let response_outcome = runtime.pipeline.evaluate_response(&summary);
+    record.response_transforms = response_outcome.traces;
+    match response_outcome.action {
+        ResponseAction::Forward => {
+            let status = upstream_response.status();
+            record.action = Action::Allow;
+            record.status_code = Some(status.as_u16());
+            record.duration_ms = ms_since(started);
+            pending.emit(&record);
+
+            let (mut parts, body) = upstream_response.into_parts();
+            let mut resp_headers: Vec<(String, String)> = parts
+                .headers
+                .iter()
+                .map(|(n, v)| {
+                    (n.as_str().to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned())
+                })
+                .collect();
+            strip_hop_by_hop(&mut resp_headers, false);
+            parts.headers.clear();
+            for (name, value) in &resp_headers {
+                if let (Ok(n), Ok(v)) = (
+                    hyper::header::HeaderName::from_bytes(name.as_bytes()),
+                    hyper::header::HeaderValue::from_bytes(value.as_bytes()),
+                ) {
+                    parts.headers.append(n, v);
+                }
+            }
+            Ok(Response::from_parts(
+                parts,
+                body.map_err(|e| Box::new(e) as BoxError).boxed(),
+            ))
+        }
+        ResponseAction::Replace { by, response, stub } => {
+            record.action = if stub { Action::Stub } else { Action::Reject };
+            record.status_code = Some(response.status);
+            if stub {
+                record.stubbed_by = Some(by);
+            } else {
+                record.rejected_by = Some(by);
+            }
+            record.duration_ms = ms_since(started);
+            pending.emit(&record);
+            Ok(build_response(response))
+        }
+        ResponseAction::Error { by: _, message } => {
+            record.action = Action::Error;
+            record.status_code = Some(502);
+            record.error = Some(message);
+            record.duration_ms = ms_since(started);
+            pending.emit(&record);
+            Ok(status_response(StatusCode::BAD_GATEWAY))
+        }
+    }
+}
+
+async fn send_upstream(
+    stream: tokio::net::TcpStream,
+    req: Request<OutBody>,
+    header_timeout: std::time::Duration,
+) -> Result<Response<Incoming>, String> {
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+        .await
+        .map_err(|e| format!("upstream handshake: {e}"))?;
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    match tokio::time::timeout(header_timeout, sender.send_request(req)).await {
+        Ok(Ok(resp)) => Ok(resp),
+        Ok(Err(e)) => Err(format!("upstream request: {e}")),
+        Err(_) => Err("upstream response header timeout".into()),
+    }
+}
+
+fn ms_since(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
+}
+
+fn status_response(status: StatusCode) -> Response<OutBody> {
+    Response::builder().status(status).body(empty_body()).expect("static response")
+}
+
+fn build_response(r: hematite_kernel::verdict::Response) -> Response<OutBody> {
+    let mut builder = Response::builder().status(r.status);
+    for (name, value) in &r.headers {
+        builder = builder.header(name.as_str(), value.as_str());
+    }
+    builder.body(bytes_body(r.body)).unwrap_or_else(|_| status_response(StatusCode::BAD_GATEWAY))
+}
+

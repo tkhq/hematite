@@ -7,7 +7,7 @@ human-readable source of truth, and any divergence between the two is a bug.
 |---|---|---|---|
 | `matching.json` | C §1 | L0 | `hematite-kernel/tests/conformance_matching.rs` |
 | `secrets-swap.json` | C §2 | L3 | secrets transform tests (Phase 5) |
-| `hop-by-hop.json` | C §3 | L1 | `hematite-proxy` tests (Phase 3) |
+| `hop-by-hop.json` | C §3 | L1 | `hematite-proxy/tests/conformance_hop_by_hop.rs` |
 | `decision-traces.json` | C §4 | L0 + L3 | `hematite-kernel/tests/conformance_traces.rs` |
 
 Conventions:

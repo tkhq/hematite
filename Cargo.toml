@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/hematite-kernel"]
+members = ["crates/hematite-kernel", "crates/hematite-proxy", "crates/hematite"]
 
 [workspace.package]
 edition = "2021"
@@ -10,5 +10,13 @@ repository = "https://github.com/tkhq/test-hematite"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 regex = "1"
 zeroize = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "sync", "signal"] }
+hyper = { version = "1", features = ["http1", "server", "client"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+hematite-kernel = { path = "crates/hematite-kernel" }
+hematite-proxy = { path = "crates/hematite-proxy" }

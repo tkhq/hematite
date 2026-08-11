@@ -1,0 +1,20 @@
+# L1 forward proxy (spec Parts 05 §1-§2/§6, 07, 08, 09).
+# hyper/tokio and their companion crates (hyper-util, http-body-util,
+# bytes) are the Appendix E "hyper" budget line.
+[package]
+name = "hematite-proxy"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+hematite-kernel.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+bytes.workspace = true
