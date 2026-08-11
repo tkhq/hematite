@@ -103,7 +103,6 @@ pub async fn serve_management(
     let api_key = Arc::new(api_key);
     let current_listen = Arc::new(current_listen);
     let config_path = Arc::new(config_path);
-    let metrics = Arc::new(metrics);
     loop {
         let (stream, _remote) = listener.accept().await?;
         let state = state.clone();
