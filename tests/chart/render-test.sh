@@ -22,6 +22,18 @@ assert 'value: "10.43.200.2"'           "proxy_ip env equals the Service cluster
 assert 'checksum/config'                "config checksum annotation rolls the Deployment"
 assert 'mountPath: /etc/hematite/hematite.yaml' "config mounted at the canonical path"
 assert 'protocol: UDP'                  "DNS service port is UDP"
+assert 'HEMATITE_TLS_CA_CERT'           "TLS cert path env override present"
+assert 'mountPath: /etc/hematite/tls'   "TLS secret mounted at the canonical path"
+assert 'secretName: hematite-tls'       "TLS volume uses tls.existingSecret"
+assert 'HEMATITE_MANAGEMENT_API_KEY'    "management API key env present"
+assert 'name: hematite-mgmt'            "management key sourced from management.existingSecret"
+assert 'name: OPENAI_API_KEY'           "values.env passthrough renders"
+
+# dns.enabled without a pinned clusterIP must refuse to render.
+if helm template hematite "$CHART" -f "$VALUES" --set service.clusterIP="" >/dev/null 2>&1; then
+  echo "FAIL: expected render error when service.dns.enabled without service.clusterIP"; exit 1
+fi
+echo "ok: dns.enabled without clusterIP is a render error"
 
 helm lint "$CHART" -f "$VALUES"
 echo "chart render checks: PASS"
