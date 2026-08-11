@@ -85,9 +85,12 @@ impl Histogram {
     }
 
     fn observe(&mut self, value: f64) {
+        // Store per-band (not cumulative) so render_histogram can produce the
+        // correct cumulative sum without double-counting.
         for (i, &bound) in BUCKETS.iter().enumerate() {
             if value <= bound {
                 self.counts[i] += 1;
+                break;
             }
         }
         self.sum += value;
@@ -154,7 +157,12 @@ impl Metrics {
             escape_label(action),
             escape_label(&rejected_by),
         );
-        *self.requests.lock().unwrap().entry(req_key).or_insert(0) += 1;
+        *self
+            .requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(req_key)
+            .or_insert(0) += 1;
 
         // hematite_request_duration_seconds
         let dur_key = format!(
@@ -165,7 +173,7 @@ impl Metrics {
         let seconds = record.duration_ms / 1000.0;
         self.duration
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .entry(dur_key)
             .or_insert_with(Histogram::new)
             .observe(seconds);
@@ -180,7 +188,12 @@ impl Metrics {
                 let n = arr.len() as u64;
                 if n > 0 {
                     let key = r#"result="swapped""#.to_string();
-                    *self.secrets.lock().unwrap().entry(key).or_insert(0) += n;
+                    *self
+                        .secrets
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .entry(key)
+                        .or_insert(0) += n;
                 }
             }
             // source-error count
@@ -192,7 +205,12 @@ impl Metrics {
                 let n = arr.len() as u64;
                 if n > 0 {
                     let key = r#"result="source-error""#.to_string();
-                    *self.secrets.lock().unwrap().entry(key).or_insert(0) += n;
+                    *self
+                        .secrets
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .entry(key)
+                        .or_insert(0) += n;
                 }
             }
             // missing-required: secrets trace whose record.rejected_by == Some("secrets")
@@ -200,7 +218,12 @@ impl Metrics {
                 && trace.verdict == TraceVerdict::Reject
             {
                 let key = r#"result="missing-required""#.to_string();
-                *self.secrets.lock().unwrap().entry(key).or_insert(0) += 1;
+                *self
+                    .secrets
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .entry(key)
+                    .or_insert(0) += 1;
             }
         }
     }
@@ -208,27 +231,47 @@ impl Metrics {
     /// Increment the upstream dial counter.
     pub fn inc_dial(&self, result: DialResult) {
         let key = format!(r#"result="{}""#, escape_label(result.as_str()));
-        *self.dials.lock().unwrap().entry(key).or_insert(0) += 1;
+        *self
+            .dials
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(key)
+            .or_insert(0) += 1;
     }
 
     /// Increment the DNS query counter.
     pub fn inc_dns(&self, outcome: DnsOutcome) {
         let key = format!(r#"outcome="{}""#, escape_label(outcome.as_str()));
-        *self.dns.lock().unwrap().entry(key).or_insert(0) += 1;
+        *self
+            .dns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(key)
+            .or_insert(0) += 1;
     }
 
     /// Increment the TLS leaf cache hit/miss counter.
     pub fn inc_tls_cache(&self, hit: bool) {
         let event = if hit { "hit" } else { "miss" };
         let key = format!(r#"event="{}""#, escape_label(event));
-        *self.tls_cache.lock().unwrap().entry(key).or_insert(0) += 1;
+        *self
+            .tls_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(key)
+            .or_insert(0) += 1;
     }
 
     /// Increment the config reload counter.
     pub fn inc_reload(&self, ok: bool) {
         let result = if ok { "ok" } else { "error" };
         let key = format!(r#"result="{}""#, escape_label(result));
-        *self.reloads.lock().unwrap().entry(key).or_insert(0) += 1;
+        *self
+            .reloads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(key)
+            .or_insert(0) += 1;
     }
 
     /// Render all metrics in Prometheus text exposition format.
@@ -244,19 +287,34 @@ impl Metrics {
 
         // hematite_requests_total
         out.push_str("# TYPE hematite_requests_total counter\n");
-        for (labels, count) in self.requests.lock().unwrap().iter() {
+        for (labels, count) in self
+            .requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+        {
             out.push_str(&format!("hematite_requests_total{{{labels}}} {count}\n"));
         }
 
         // hematite_request_duration_seconds histogram
         out.push_str("# TYPE hematite_request_duration_seconds histogram\n");
-        for (labels, hist) in self.duration.lock().unwrap().iter() {
+        for (labels, hist) in self
+            .duration
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+        {
             render_histogram(&mut out, "hematite_request_duration_seconds", labels, hist);
         }
 
         // hematite_secrets_swaps_total
         out.push_str("# TYPE hematite_secrets_swaps_total counter\n");
-        for (labels, count) in self.secrets.lock().unwrap().iter() {
+        for (labels, count) in self
+            .secrets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+        {
             out.push_str(&format!(
                 "hematite_secrets_swaps_total{{{labels}}} {count}\n"
             ));
@@ -264,7 +322,7 @@ impl Metrics {
 
         // hematite_upstream_dials_total
         out.push_str("# TYPE hematite_upstream_dials_total counter\n");
-        for (labels, count) in self.dials.lock().unwrap().iter() {
+        for (labels, count) in self.dials.lock().unwrap_or_else(|e| e.into_inner()).iter() {
             out.push_str(&format!(
                 "hematite_upstream_dials_total{{{labels}}} {count}\n"
             ));
@@ -272,13 +330,18 @@ impl Metrics {
 
         // hematite_dns_queries_total
         out.push_str("# TYPE hematite_dns_queries_total counter\n");
-        for (labels, count) in self.dns.lock().unwrap().iter() {
+        for (labels, count) in self.dns.lock().unwrap_or_else(|e| e.into_inner()).iter() {
             out.push_str(&format!("hematite_dns_queries_total{{{labels}}} {count}\n"));
         }
 
         // hematite_tls_leaf_cache_events_total
         out.push_str("# TYPE hematite_tls_leaf_cache_events_total counter\n");
-        for (labels, count) in self.tls_cache.lock().unwrap().iter() {
+        for (labels, count) in self
+            .tls_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+        {
             out.push_str(&format!(
                 "hematite_tls_leaf_cache_events_total{{{labels}}} {count}\n"
             ));
@@ -286,7 +349,12 @@ impl Metrics {
 
         // hematite_config_reloads_total
         out.push_str("# TYPE hematite_config_reloads_total counter\n");
-        for (labels, count) in self.reloads.lock().unwrap().iter() {
+        for (labels, count) in self
+            .reloads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+        {
             out.push_str(&format!(
                 "hematite_config_reloads_total{{{labels}}} {count}\n"
             ));
@@ -419,9 +487,22 @@ mod tests {
         assert!(out.contains(
             r#"hematite_requests_total{mode="https",action="reject",rejected_by="allowlist"} 1"#
         ));
+        // 42 ms = 0.042 s falls in the le="0.05" band; cumulative invariant:
+        // every bucket at or above 0.05 must equal 1, and +Inf == count == 1.
         assert!(out.contains(
             r#"hematite_request_duration_seconds_bucket{mode="https",action="allow",le="0.05"} 1"#
         ));
+        assert!(out.contains(
+            r#"hematite_request_duration_seconds_bucket{mode="https",action="allow",le="0.1"} 1"#
+        ));
+        assert!(out.contains(
+            r#"hematite_request_duration_seconds_bucket{mode="https",action="allow",le="30"} 1"#
+        ));
+        assert!(out.contains(
+            r#"hematite_request_duration_seconds_bucket{mode="https",action="allow",le="+Inf"} 1"#
+        ));
+        assert!(out
+            .contains(r#"hematite_request_duration_seconds_count{mode="https",action="allow"} 1"#));
         assert!(out.contains("hematite_request_duration_seconds_sum"));
         assert!(out.contains(r#"hematite_build_info{version="1.2.3"} 1"#));
         assert!(out.contains("# TYPE hematite_requests_total counter"));
