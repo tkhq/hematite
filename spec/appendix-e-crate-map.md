@@ -108,7 +108,9 @@ The following crates were added as part of the observability feature (Part 09 §
 - **`opentelemetry-http`** (feature: `hyper`) — adapts hyper as the HTTP
   client for `opentelemetry-otlp`.
 - **`prost`** — protobuf encoding/decoding, pulled in transitively by
-  `opentelemetry-otlp`'s `http-proto` feature. Not a direct dependency.
+  `opentelemetry-otlp`'s `http-proto` feature. Not a direct production
+  dependency; direct dev-dependency of `crates/hematite` for OTLP integration
+  test decoding.
 - **`opentelemetry-proto`** — dev-dependency only; used in OTLP integration
   tests to decode exported protobuf payloads and assert span attributes.
 

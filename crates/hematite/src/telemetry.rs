@@ -1,7 +1,6 @@
 //! Telemetry initialisation — structured operational logs (Task 4) and
 //! OTLP trace export (Task 5).
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use hematite_proxy::config::OtlpSection;
@@ -79,11 +78,11 @@ impl TelemetryGuard {
 /// the disabled case does not silently bypass the real code.
 pub fn build_otlp_provider_if_enabled(
     otlp: &OtlpSection,
-) -> Option<opentelemetry_sdk::trace::SdkTracerProvider> {
+) -> Result<Option<opentelemetry_sdk::trace::SdkTracerProvider>, String> {
     if otlp.enabled {
-        Some(build_otlp_provider(otlp))
+        Ok(Some(build_otlp_provider(otlp)?))
     } else {
-        None
+        Ok(None)
     }
 }
 
@@ -99,10 +98,20 @@ pub fn build_otlp_provider_if_enabled(
 /// using the hyper HTTP client.  Fresh trace roots are always created here;
 /// no `traceparent` extraction or injection is performed — this is by design
 /// (trust model: the proxy is not an intermediary in the tracing graph).
-pub fn init_telemetry(format: &str, level: &str, otlp: &OtlpSection) -> TelemetryGuard {
+///
+/// # Errors
+///
+/// Returns an error string if the OTLP exporter cannot be built (e.g. invalid
+/// endpoint URI).  Must be called from within a tokio runtime context when
+/// `otlp.enabled` is `true` (the batch span processor spawns a tokio task).
+pub fn init_telemetry(
+    format: &str,
+    level: &str,
+    otlp: &OtlpSection,
+) -> Result<TelemetryGuard, String> {
     let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"));
 
-    if let Some(provider) = build_otlp_provider_if_enabled(otlp) {
+    if let Some(provider) = build_otlp_provider_if_enabled(otlp)? {
         // The SDK's internal diagnostics (export errors, sampler decisions)
         // route through the `opentelemetry/internal-logs` feature which emits
         // `tracing` events.  They will be captured by the fmt layer below
@@ -148,9 +157,9 @@ pub fn init_telemetry(format: &str, level: &str, otlp: &OtlpSection) -> Telemetr
                 .init();
         }
 
-        TelemetryGuard {
+        Ok(TelemetryGuard {
             provider: Some(provider),
-        }
+        })
     } else {
         // OTLP disabled — plain fmt subscriber only.
         if format == "json" {
@@ -167,18 +176,22 @@ pub fn init_telemetry(format: &str, level: &str, otlp: &OtlpSection) -> Telemetr
                 .init();
         }
 
-        TelemetryGuard { provider: None }
+        Ok(TelemetryGuard { provider: None })
     }
 }
 
 /// Build the SDK tracer provider with a batch OTLP/HTTP-protobuf exporter.
+///
+/// Returns an error string if the exporter cannot be built (e.g. invalid
+/// endpoint URI). Must be called within a tokio runtime context — the batch
+/// span processor spawns a tokio task via `tokio::spawn`.
 ///
 /// Exposed as `pub(crate)` so that integration tests can construct a provider
 /// without installing a global tracing subscriber (integration tests scope
 /// the subscriber with `tracing::subscriber::with_default`).
 pub(crate) fn build_otlp_provider(
     otlp: &OtlpSection,
-) -> opentelemetry_sdk::trace::SdkTracerProvider {
+) -> Result<opentelemetry_sdk::trace::SdkTracerProvider, String> {
     use opentelemetry_http::hyper::HyperClient;
     use opentelemetry_otlp::{SpanExporter, WithExportConfig};
     use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider};
@@ -200,12 +213,7 @@ pub(crate) fn build_otlp_provider(
         .with_http_client(http_client)
         .with_endpoint(endpoint)
         .build()
-        .unwrap_or_else(|e| {
-            // Configuration is validated at startup; a build failure here is
-            // unexpected (bad URI, etc.).  Fall back gracefully by panicking
-            // with a clear message rather than silently losing spans.
-            panic!("failed to build OTLP span exporter: {e}");
-        });
+        .map_err(|e| format!("failed to build OTLP span exporter: {e}"))?;
 
     // Resource carries the service name declared in config.
     let resource = Resource::builder()
@@ -227,26 +235,11 @@ pub(crate) fn build_otlp_provider(
 
     let batch_processor = BatchSpanProcessor::builder(exporter, TokioRuntime).build();
 
-    SdkTracerProvider::builder()
+    Ok(SdkTracerProvider::builder()
         .with_span_processor(batch_processor)
         .with_sampler(sampler)
         .with_resource(resource)
-        .build()
-}
-
-/// Error counter for throttled export error logging (1-in-N reporting).
-/// Only used when telemetry internals surface errors via tracing events;
-/// wired up here so the counter lives for the process lifetime.
-#[allow(dead_code)]
-static EXPORT_ERR_COUNT: AtomicU64 = AtomicU64::new(0);
-
-/// Log an export error, but only once every `N` occurrences.
-#[allow(dead_code)]
-pub fn log_export_error_throttled(err: &dyn std::fmt::Display, n: u64) {
-    let count = EXPORT_ERR_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    if count.is_multiple_of(n) {
-        tracing::warn!(error = %err, count, "OTLP export error (throttled)");
-    }
+        .build())
 }
 
 #[cfg(test)]
@@ -275,6 +268,41 @@ mod tests {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    /// Regression test for the init-ordering bug: `build_otlp_provider` calls
+    /// `BatchSpanProcessor::builder(...).build()` which invokes `tokio::spawn`
+    /// internally.  With the OLD ordering (provider built before the runtime
+    /// was created) this panicked with "no reactor running".
+    ///
+    /// This test is a plain non-tokio `#[test]` — it creates the runtime
+    /// manually, enters it, builds the provider, then drops the enter guard
+    /// before running any async work.  If the ordering regresses (provider
+    /// built outside the enter scope), `tokio::spawn` will panic and the test
+    /// will fail.
+    #[test]
+    fn build_otlp_provider_inside_runtime_enter_does_not_panic() {
+        use hematite_proxy::config::OtlpSection;
+        use tokio::runtime::Runtime;
+
+        let otlp = OtlpSection {
+            enabled: true,
+            endpoint: Some("http://127.0.0.1:1/".to_string()), // unreachable; never dialled
+            sample_ratio: 1.0,
+            service_name: "regression-test".to_string(),
+        };
+
+        let rt = Runtime::new().expect("create runtime");
+        // The enter guard makes tokio::spawn available to the code under it.
+        let provider = {
+            let _enter = rt.enter();
+            super::build_otlp_provider(&otlp)
+                .expect("build_otlp_provider must succeed inside a runtime enter scope")
+        };
+        // Shut down via the runtime so the spawned batch task can finish.
+        rt.block_on(async move {
+            let _ = tokio::task::spawn_blocking(move || provider.shutdown()).await;
+        });
     }
 
     #[test]

@@ -13,14 +13,19 @@ pub mod telemetry_for_test {
     /// Build an OTLP tracer provider without installing any global tracing
     /// subscriber.  The returned provider can be used with
     /// `tracing::subscriber::with_default` in tests that need span isolation.
-    pub fn build_provider_for_test(otlp: &OtlpSection) -> SdkTracerProvider {
+    ///
+    /// Returns an error string if the exporter cannot be built (e.g. invalid
+    /// endpoint URI). Must be called within a tokio runtime context.
+    pub fn build_provider_for_test(otlp: &OtlpSection) -> Result<SdkTracerProvider, String> {
         crate::telemetry::build_otlp_provider(otlp)
     }
 
-    /// Exercises the production `enabled` decision path: returns `Some` when
-    /// `otlp.enabled = true` and `None` when `false`.  Used by the disabled-case
+    /// Exercises the production `enabled` decision path: returns `Ok(Some)` when
+    /// `otlp.enabled = true` and `Ok(None)` when `false`.  Used by the disabled-case
     /// integration test to verify the real code path, not a bare registry.
-    pub fn build_provider_if_enabled_for_test(otlp: &OtlpSection) -> Option<SdkTracerProvider> {
+    pub fn build_provider_if_enabled_for_test(
+        otlp: &OtlpSection,
+    ) -> Result<Option<SdkTracerProvider>, String> {
         crate::telemetry::build_otlp_provider_if_enabled(otlp)
     }
 

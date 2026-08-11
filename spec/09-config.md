@@ -143,16 +143,17 @@ Span structure:
 - hematite never injects `traceparent` into upstream requests. Header
   handling is exactly as Part 04 specifies.
 
-Export failures are logged (throttled) and MUST NOT affect request handling.
-Shutdown flushes with a 5-second cap; spans not exported within that window
-may be lost.
+Export failures are logged via the SDK's internal tracing events and MUST NOT
+affect request handling. Shutdown flushes with a 5-second cap; spans not
+exported within that window may be lost.
 
 When `observability.otlp.enabled` is `false` (the default), no exporter
-runs and no per-request span is created beyond the tracing layer's no-op.
+runs. The tracing instrumentation layer is still present but routes to a
+no-op subscriber, so no spans are recorded or exported.
 
 ### 5.3 Head sampling
 
 `observability.otlp.sample_ratio` controls head sampling as a probability in
 `[0.0, 1.0]`. A ratio of `1.0` (the default) samples every request. A ratio
-of `0.0` samples nothing. Sampled-out requests incur no span-creation
-overhead.
+of `0.0` samples nothing. Sampled-out spans are not exported; the sampling
+and export decision is made downstream by the SDK after span creation.

@@ -94,7 +94,7 @@ async fn otlp_exports_spans_when_enabled() {
     const FAKE_PROXY_TOKEN: &str = "proxy-test-XYZ-secret-value";
     let _token_holder = FAKE_PROXY_TOKEN; // binds the string; never recorded
 
-    let provider = build_provider_for_test(&otlp);
+    let provider = build_provider_for_test(&otlp).expect("build OTLP provider");
 
     // Build a scoped subscriber with the OTel layer — no global install.
     let tracer = {
@@ -187,8 +187,9 @@ async fn otlp_no_export_when_disabled() {
         service_name: "test-hematite".to_string(),
     };
 
-    // The production decision path must return None when disabled.
-    let provider = build_provider_if_enabled_for_test(&otlp_disabled);
+    // The production decision path must return Ok(None) when disabled.
+    let provider = build_provider_if_enabled_for_test(&otlp_disabled)
+        .expect("build_provider_if_enabled_for_test should not error");
     assert!(
         provider.is_none(),
         "build_otlp_provider_if_enabled should return None when enabled=false"
@@ -212,7 +213,8 @@ async fn otlp_no_export_when_disabled() {
         sample_ratio: 0.0, // sample nothing — no export traffic
         service_name: "test-hematite".to_string(),
     };
-    let enabled_provider = build_provider_if_enabled_for_test(&otlp_enabled);
+    let enabled_provider = build_provider_if_enabled_for_test(&otlp_enabled)
+        .expect("build_provider_if_enabled_for_test should not error");
     assert!(
         enabled_provider.is_some(),
         "build_otlp_provider_if_enabled should return Some when enabled=true"
@@ -277,7 +279,7 @@ async fn shutdown_respects_5s_cap_against_hanging_collector() {
         service_name: "test-hematite".to_string(),
     };
 
-    let provider = build_provider_for_test(&otlp);
+    let provider = build_provider_for_test(&otlp).expect("build OTLP provider");
     let tracer = {
         use opentelemetry::trace::TracerProvider as _;
         provider.tracer("hematite-test")

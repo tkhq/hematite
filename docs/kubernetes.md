@@ -131,11 +131,14 @@ service:
   management: { enabled: true, port: 9092 }
 ```
 
-In `values.config`, the management listener and metrics should both be on:
+In `values.config`, the management listener must bind all interfaces so the
+Kubernetes Service can forward traffic from outside the pod (spec §4 says
+management SHOULD bind loopback for standalone deployments, but in-cluster
+scraping requires a pod-routable address):
 
 ```yaml
 management:
-  listen: "127.0.0.1:9092"
+  listen: "0.0.0.0:9092"
   api_key_env: "HEMATITE_MANAGEMENT_API_KEY"
 
 observability:

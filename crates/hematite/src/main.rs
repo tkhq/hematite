@@ -111,21 +111,14 @@ fn main() -> ExitCode {
         }
     };
 
-    // Install the global tracing subscriber now that we have the config.
-    // Pre-config-load errors above go to bare stderr by necessity.
-    let guard = telemetry::init_telemetry(
-        &config.observability.log.format,
-        &config.log_level,
-        &config.observability.otlp,
-    );
-
     for warning in &config.warnings {
-        tracing::warn!(warning = %warning, "config warning");
+        // warnings emitted pre-tracing; use bare stderr like other pre-init messages
+        eprintln!("hematite: warning: {warning}");
     }
     let runtime = match build_runtime(&config) {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!(error = %e, "failed to build runtime");
+            eprintln!("hematite: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -133,10 +126,31 @@ fn main() -> ExitCode {
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
-            tracing::error!(error = %e, "failed to create tokio runtime");
+            eprintln!("hematite: runtime: {e}");
             return ExitCode::FAILURE;
         }
     };
+
+    // Install the global tracing subscriber AFTER the tokio runtime is created
+    // and inside an rt.enter() guard.  BatchSpanProcessor::build() (when OTLP
+    // is enabled) calls tokio::spawn internally, which panics if invoked
+    // outside a tokio context.  We drop the enter guard before block_on so
+    // that block_on's own context takes over cleanly.
+    let guard = {
+        let _enter = rt.enter();
+        match telemetry::init_telemetry(
+            &config.observability.log.format,
+            &config.log_level,
+            &config.observability.otlp,
+        ) {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("hematite: telemetry init failed: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    };
+
     rt.block_on(async move {
         // The metrics registry lives for the process lifetime; reused on reload.
         // Extract it before moving `runtime` into `SharedState`.
