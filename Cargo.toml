@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/hematite-kernel", "crates/hematite-proxy", "crates/hematite"]
+members = ["crates/hematite-kernel", "crates/hematite-proxy", "crates/hematite-dns", "crates/hematite"]
 
 [workspace.package]
 edition = "2021"
@@ -18,5 +18,11 @@ hyper = { version = "1", features = ["http1", "server", "client"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 bytes = "1"
+# ring backend, not aws-lc-rs: no C toolchain needed, keeps the build portable.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring", "x509-parser"] }
+lru = "0.12"
 hematite-kernel = { path = "crates/hematite-kernel" }
 hematite-proxy = { path = "crates/hematite-proxy" }
+hematite-dns = { path = "crates/hematite-dns" }

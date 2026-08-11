@@ -14,3 +14,4 @@ pub mod http;
 pub mod management;
 pub mod resolver;
 pub mod state;
+pub mod tls;
