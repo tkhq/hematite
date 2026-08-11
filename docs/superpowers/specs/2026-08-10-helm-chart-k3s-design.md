@@ -37,8 +37,9 @@ Chart publishing (OCI push to ghcr) is a follow-up, not MVP.
   `-config /etc/hematite/hematite.yaml`.
 - Config mounted from the ConfigMap; a checksum annotation on the pod
   template rolls the Deployment on `helm upgrade` when config changes.
-- Readiness/liveness: probe the management listener when enabled,
-  otherwise a TCP probe on the http port.
+- Readiness/liveness: TCP probes on the http listener port (always
+  enabled; the management endpoint requires auth, so it makes a poor
+  probe target).
 - No RBAC beyond the default ServiceAccount — hematite does not talk to
   the Kubernetes API.
 
