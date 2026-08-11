@@ -1,0 +1,62 @@
+image:
+  repository: ghcr.io/tkhq/hematite
+  tag: ""            # defaults to Chart.appVersion
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+# The Service is the stable address clients dial. Each entry mirrors a
+# listener the config enables; port is used as both Service port and
+# container targetPort, so it must match the config's listen ports.
+service:
+  # Required when service.dns.enabled: a free IP from the cluster's
+  # service CIDR. DNS-steered clients dial the IP hematite answers with,
+  # and only the Service IP is stable — the chart templates both
+  # Service.spec.clusterIP and HEMATITE_DNS_PROXY_IP from this value.
+  clusterIP: ""
+  dns: { enabled: false, port: 53 }
+  http: { enabled: true, port: 80 }
+  https: { enabled: false, port: 443 }
+  tunnel: { enabled: false, port: 8080 }
+  management: { enabled: false, port: 9092 }
+
+tls:
+  # Secret with keys ca.crt / ca.key (PKCS#8 ECDSA P-256). Required when
+  # the https or tunnel listener is enabled. hack/gen-ca.sh mints a
+  # throwaway one for dev/CI.
+  existingSecret: ""
+
+management:
+  # Secret with key apiKey, exposed as HEMATITE_MANAGEMENT_API_KEY.
+  existingSecret: ""
+
+# Literal hematite.yaml (spec Part 09). The chart injects env overrides
+# for tls cert paths, dns.proxy_ip, and the management API key, so those
+# may be omitted here.
+config: |
+  proxy:
+    http_listen: ":80"
+  transforms:
+    - name: allowlist
+      config:
+        domains: []
+  log:
+    level: "info"
+
+# Extra pod-spec passthroughs.
+env: []
+hostAliases: []
+extraVolumes: []
+extraVolumeMounts: []
+
+# Optional default-deny egress NetworkPolicy for client pods: pods
+# matching podSelector may egress only to hematite and cluster DNS.
+# Requires a NetworkPolicy-enforcing CNI (stock k3s qualifies).
+egressLockdown:
+  enabled: false
+  podSelector: {}
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

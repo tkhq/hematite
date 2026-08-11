@@ -1,0 +1,30 @@
+# Values for the k3s integration test install (and the chart render test).
+image:
+  repository: hematite
+  tag: k3s-test
+  pullPolicy: Never
+
+service:
+  clusterIP: 10.43.200.2
+  dns: { enabled: true, port: 53 }
+  http: { enabled: true, port: 80 }
+  https: { enabled: true, port: 443 }
+  tunnel: { enabled: true, port: 8080 }
+  management: { enabled: true, port: 9092 }
+
+config: |
+  dns:
+    enabled: true
+    listen: ":53"
+    proxy_ip: "10.43.200.2"
+  proxy:
+    http_listen: ":80"
+    https_listen: ":443"
+    tunnel_listen: ":8080"
+  transforms:
+    - name: allowlist
+      config:
+        domains:
+          - "httpbin.org"
+  log:
+    level: "info"

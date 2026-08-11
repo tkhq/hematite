@@ -1,0 +1,6 @@
+apiVersion: v2
+name: hematite
+description: Egress forward proxy for agent sandboxes — default-deny allowlist, TLS MITM, secret swapping, total audit.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

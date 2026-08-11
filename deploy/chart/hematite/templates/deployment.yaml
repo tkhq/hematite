@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hematite.fullname" . }}
+  labels:
+    {{- include "hematite.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "hematite.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hematite.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ .Values.config | sha256sum }}
+    spec:
+      {{- with .Values.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: hematite
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            {{- if .Values.service.dns.enabled }}
+            - name: HEMATITE_DNS_PROXY_IP
+              value: {{ required "service.clusterIP must be set when service.dns.enabled (DNS answers must point at the stable Service IP)" .Values.service.clusterIP | quote }}
+            {{- end }}
+            {{- if .Values.tls.existingSecret }}
+            - name: HEMATITE_TLS_CA_CERT
+              value: /etc/hematite/tls/ca.crt
+            - name: HEMATITE_TLS_CA_KEY
+              value: /etc/hematite/tls/ca.key
+            {{- end }}
+            {{- if .Values.management.existingSecret }}
+            - name: HEMATITE_MANAGEMENT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.management.existingSecret }}
+                  key: apiKey
+            {{- end }}
+            {{- with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            {{- if .Values.service.dns.enabled }}
+            - containerPort: {{ .Values.service.dns.port }}
+              protocol: UDP
+            {{- end }}
+            {{- if .Values.service.http.enabled }}
+            - containerPort: {{ .Values.service.http.port }}
+            {{- end }}
+            {{- if .Values.service.https.enabled }}
+            - containerPort: {{ .Values.service.https.port }}
+            {{- end }}
+            {{- if .Values.service.tunnel.enabled }}
+            - containerPort: {{ .Values.service.tunnel.port }}
+            {{- end }}
+            {{- if .Values.service.management.enabled }}
+            - containerPort: {{ .Values.service.management.port }}
+            {{- end }}
+          readinessProbe:
+            tcpSocket:
+              port: {{ .Values.service.http.port }}
+          livenessProbe:
+            tcpSocket:
+              port: {{ .Values.service.http.port }}
+            initialDelaySeconds: 5
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/hematite/hematite.yaml
+              subPath: hematite.yaml
+              readOnly: true
+            {{- if .Values.tls.existingSecret }}
+            - name: tls
+              mountPath: /etc/hematite/tls
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "hematite.fullname" . }}
+        {{- if .Values.tls.existingSecret }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.existingSecret }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
