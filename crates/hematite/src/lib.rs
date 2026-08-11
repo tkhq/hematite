@@ -17,6 +17,19 @@ pub mod telemetry_for_test {
         crate::telemetry::build_otlp_provider(otlp)
     }
 
+    /// Exercises the production `enabled` decision path: returns `Some` when
+    /// `otlp.enabled = true` and `None` when `false`.  Used by the disabled-case
+    /// integration test to verify the real code path, not a bare registry.
+    pub fn build_provider_if_enabled_for_test(otlp: &OtlpSection) -> Option<SdkTracerProvider> {
+        crate::telemetry::build_otlp_provider_if_enabled(otlp)
+    }
+
+    /// Wrap an existing provider in a `TelemetryGuard` so tests can exercise
+    /// `TelemetryGuard::shutdown` directly.
+    pub fn guard_from_provider(provider: SdkTracerProvider) -> TelemetryGuard {
+        TelemetryGuard::from_provider(provider)
+    }
+
     /// Re-export `TelemetryGuard` so test files can name the type.
     pub use crate::telemetry::TelemetryGuard;
 }

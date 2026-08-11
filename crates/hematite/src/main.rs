@@ -235,7 +235,7 @@ fn main() -> ExitCode {
 
         let _ = tokio::signal::ctrl_c().await;
         tracing::info!("shutting down");
-        guard.shutdown();
+        guard.shutdown().await;
         ExitCode::SUCCESS
     })
 }

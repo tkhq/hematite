@@ -23,18 +23,67 @@ pub struct TelemetryGuard {
 }
 
 impl TelemetryGuard {
+    /// Construct a guard from an existing provider.  Used by test helpers only.
+    #[allow(dead_code)]
+    pub(crate) fn from_provider(provider: opentelemetry_sdk::trace::SdkTracerProvider) -> Self {
+        TelemetryGuard {
+            provider: Some(provider),
+        }
+    }
+
     /// Flush all remaining spans and shut down the SDK pipeline, waiting up
     /// to 5 seconds.
     ///
     /// The brief requires an explicit shutdown rather than relying on Drop so
     /// that the caller can decide the flushing point (after ctrl_c, before
     /// the process exits).
-    pub fn shutdown(self) {
+    ///
+    /// # Shutdown timeout enforcement
+    ///
+    /// `SdkTracerProvider::shutdown_with_timeout` passes the timeout to the
+    /// batch span processor, but the experimental async-runtime
+    /// `BatchSpanProcessor` (SDK 0.32) ignores the argument and does an
+    /// unbounded `futures_executor::block_on`.  We therefore enforce the cap
+    /// ourselves: the blocking shutdown call runs in `tokio::task::spawn_blocking`
+    /// so it does not starve the Tokio runtime, and we race that future against
+    /// a `tokio::time::timeout`.  The batch task is still Tokio-driven so it
+    /// can make progress while we wait.
+    pub async fn shutdown(self) {
         if let Some(provider) = self.provider {
-            if let Err(e) = provider.shutdown_with_timeout(Duration::from_secs(5)) {
-                tracing::warn!(error = %e, "OTLP provider shutdown error");
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                tokio::task::spawn_blocking(move || provider.shutdown()),
+            )
+            .await;
+
+            match result {
+                Err(_elapsed) => {
+                    tracing::warn!("OTLP provider shutdown timed out after 5s — spans may be lost");
+                }
+                Ok(Err(join_err)) => {
+                    tracing::warn!(error = %join_err, "OTLP provider shutdown task panicked");
+                }
+                Ok(Ok(Err(sdk_err))) => {
+                    tracing::warn!(error = %sdk_err, "OTLP provider shutdown error");
+                }
+                Ok(Ok(Ok(()))) => {}
             }
         }
+    }
+}
+
+/// Build an OTLP tracer provider if `otlp.enabled` is `true`; returns `None`
+/// when OTLP is disabled.
+///
+/// This is the production decision path exercised by integration tests so that
+/// the disabled case does not silently bypass the real code.
+pub fn build_otlp_provider_if_enabled(
+    otlp: &OtlpSection,
+) -> Option<opentelemetry_sdk::trace::SdkTracerProvider> {
+    if otlp.enabled {
+        Some(build_otlp_provider(otlp))
+    } else {
+        None
     }
 }
 
@@ -53,23 +102,13 @@ impl TelemetryGuard {
 pub fn init_telemetry(format: &str, level: &str, otlp: &OtlpSection) -> TelemetryGuard {
     let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"));
 
-    if otlp.enabled {
-        // Build the OTLP provider before we install subscribers so we can
-        // attach the tracing-opentelemetry layer.
-        let provider = build_otlp_provider(otlp);
-
+    if let Some(provider) = build_otlp_provider_if_enabled(otlp) {
         // The SDK's internal diagnostics (export errors, sampler decisions)
         // route through the `opentelemetry/internal-logs` feature which emits
         // `tracing` events.  They will be captured by the fmt layer below
         // automatically — no separate error-handler hook is needed in 0.32.
         // (The `set_error_handler` API from older SDK versions does not exist
         // in 0.32; this is an API deviation from the brief, recorded here.)
-        //
-        // To reduce log noise from transient export failures we install a
-        // simple throttle: the AtomicU64 counts errors and the inner check
-        // inside the layer's event filter only logs every N=100th occurrence.
-        // Because the SDK already throttles via the batch processor this is a
-        // belt-and-suspenders guard rather than a hard requirement.
 
         // Install fmt + otel layers together via the Registry.  The EnvFilter
         // is applied per-layer to the fmt layer; the OTLP layer sees all spans

@@ -22,7 +22,9 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
 use tokio::net::TcpListener;
 
-use hematite::telemetry_for_test::build_provider_for_test;
+use hematite::telemetry_for_test::{
+    build_provider_for_test, build_provider_if_enabled_for_test, guard_from_provider,
+};
 use hematite_proxy::config::OtlpSection;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use prost::Message as _;
@@ -166,26 +168,58 @@ async fn otlp_exports_spans_when_enabled() {
 // Test: no requests sent when OTLP disabled
 // ---------------------------------------------------------------------------
 
+/// Verifies the production decision path: `build_otlp_provider_if_enabled`
+/// returns `None` when `enabled = false`, and consequently no HTTP export
+/// reaches the collector.
+///
+/// This test deliberately goes through `build_provider_if_enabled_for_test`
+/// (which calls the same `build_otlp_provider_if_enabled` used by
+/// `init_telemetry`) rather than a bare no-op registry, so the disabled
+/// branch is genuinely exercised rather than bypassed.
 #[tokio::test(flavor = "multi_thread")]
 async fn otlp_no_export_when_disabled() {
     let (addr, bodies) = start_collector().await;
 
-    let _otlp = OtlpSection {
+    let otlp_disabled = OtlpSection {
         enabled: false,
         endpoint: Some(format!("http://127.0.0.1:{}", addr.port())),
         sample_ratio: 1.0,
         service_name: "test-hematite".to_string(),
     };
 
-    // With OTLP disabled, no provider is built and no HTTP requests should be
-    // sent to the collector.
+    // The production decision path must return None when disabled.
+    let provider = build_provider_if_enabled_for_test(&otlp_disabled);
+    assert!(
+        provider.is_none(),
+        "build_otlp_provider_if_enabled should return None when enabled=false"
+    );
+
+    // Even if a span is emitted with a no-op subscriber, no HTTP request
+    // should be sent to the collector.
     {
-        // Use a plain no-op subscriber so spans don't accidentally go anywhere.
         let subscriber = tracing_subscriber::registry();
         tracing::subscriber::with_default(subscriber, || {
             let _span = tracing::info_span!("hematite.request", host = "httpbin.org").entered();
             tracing::info!("disabled test span");
         });
+    }
+
+    // Also verify that an enabled=true config pointing at the same collector
+    // DOES produce a provider (positive case for the helper itself).
+    let otlp_enabled = OtlpSection {
+        enabled: true,
+        endpoint: Some(format!("http://127.0.0.1:{}", addr.port())),
+        sample_ratio: 0.0, // sample nothing — no export traffic
+        service_name: "test-hematite".to_string(),
+    };
+    let enabled_provider = build_provider_if_enabled_for_test(&otlp_enabled);
+    assert!(
+        enabled_provider.is_some(),
+        "build_otlp_provider_if_enabled should return Some when enabled=true"
+    );
+    // Shut it down cleanly (sample_ratio=0 means nothing was queued).
+    if let Some(p) = enabled_provider {
+        let _ = p.shutdown();
     }
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -195,5 +229,79 @@ async fn otlp_no_export_when_disabled() {
         captured.is_empty(),
         "unexpected OTLP export when disabled: {} bodies received",
         captured.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test: shutdown cap — TelemetryGuard::shutdown returns within ~6 s even
+// when the collector hangs (accepts connections but never sends a response).
+// ---------------------------------------------------------------------------
+
+/// Start a TCP listener that accepts connections, reads all incoming bytes,
+/// and deliberately never writes a response back.
+async fn start_hanging_collector() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral");
+    let addr = listener.local_addr().expect("local addr");
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            // Drain incoming bytes forever without responding.
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                loop {
+                    match tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                }
+            });
+        }
+    });
+
+    addr
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shutdown_respects_5s_cap_against_hanging_collector() {
+    let addr = start_hanging_collector().await;
+
+    let otlp = OtlpSection {
+        enabled: true,
+        endpoint: Some(format!("http://127.0.0.1:{}", addr.port())),
+        sample_ratio: 1.0,
+        service_name: "test-hematite".to_string(),
+    };
+
+    let provider = build_provider_for_test(&otlp);
+    let tracer = {
+        use opentelemetry::trace::TracerProvider as _;
+        provider.tracer("hematite-test")
+    };
+    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+    let subscriber = tracing_subscriber::registry().with(otel_layer);
+
+    // Emit a span so the batch processor has something to flush.
+    tracing::subscriber::with_default(subscriber, || {
+        let _span =
+            tracing::info_span!("hematite.request", host = "hanging.example", port = 443u16)
+                .entered();
+        tracing::info!("span destined for hanging collector");
+    });
+
+    // Wrap in TelemetryGuard and measure how long shutdown takes.
+    let guard = guard_from_provider(provider);
+    let t0 = std::time::Instant::now();
+    guard.shutdown().await;
+    let elapsed = t0.elapsed();
+
+    // The 5s cap + some Tokio scheduling slack: must complete within 6 s.
+    assert!(
+        elapsed < Duration::from_secs(6),
+        "TelemetryGuard::shutdown took {elapsed:?}, expected < 6s (cap should fire at 5s)",
     );
 }

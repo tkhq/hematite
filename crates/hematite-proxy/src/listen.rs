@@ -118,6 +118,10 @@ async fn terminate_and_serve(
         }
     }
 
+    // `tls.mitm` is intentionally a per-connection root span, not a child of
+    // any request span.  Cert minting happens during the TLS handshake, before
+    // any HTTP request is parsed and before a `hematite.request` span exists.
+    // There is no parent context to attach to here.
     let tls_mitm_span = tracing::info_span!("tls.mitm", target = %mint_target);
     let config = match cert_cache.get(&mint_target).instrument(tls_mitm_span).await {
         Ok(c) => c,
