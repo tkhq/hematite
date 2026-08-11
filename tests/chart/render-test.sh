@@ -25,6 +25,7 @@ assert 'protocol: UDP'                  "DNS service port is UDP"
 assert 'HEMATITE_TLS_CA_CERT'           "TLS cert path env override present"
 assert 'mountPath: /etc/hematite/tls'   "TLS secret mounted at the canonical path"
 assert 'secretName: hematite-tls'       "TLS volume uses tls.existingSecret"
+assert 'defaultMode: 0400'             "TLS secret volume uses restrictive file mode"
 assert 'HEMATITE_MANAGEMENT_API_KEY'    "management API key env present"
 assert 'name: hematite-mgmt'            "management key sourced from management.existingSecret"
 assert 'name: OPENAI_API_KEY'           "values.env passthrough renders"
@@ -44,6 +45,13 @@ if helm template hematite "$CHART" -f "$VALUES" --set service.clusterIP="" >/dev
   echo "FAIL: expected render error when service.dns.enabled without service.clusterIP"; exit 1
 fi
 echo "ok: dns.enabled without clusterIP is a render error"
+
+# egressLockdown.enabled with an empty podSelector must refuse to render
+# (empty podSelector would select ALL pods in the namespace, including hematite itself).
+if helm template hematite "$CHART" -f "$VALUES" --set 'egressLockdown.podSelector=' >/dev/null 2>&1; then
+  echo "FAIL: expected render error when egressLockdown.enabled with empty podSelector"; exit 1
+fi
+echo "ok: egressLockdown.enabled with empty podSelector is a render error"
 
 helm lint "$CHART" -f "$VALUES"
 echo "chart render checks: PASS"

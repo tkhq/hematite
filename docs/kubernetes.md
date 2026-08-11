@@ -133,7 +133,7 @@ env:
 
 `SSL_CERT_FILE` is the key one for private upstream CAs. hematite's dialer
 verifies upstream TLS against the system trust store. If your upstream uses a
-private CA, set `SSL_CERT_FILE` to a PEM file that Go's crypto/tls will pick
+private CA, set `SSL_CERT_FILE` to a PEM file that rustls / rustls-native-certs will pick
 up, then mount that file with `extraVolumes`/`extraVolumeMounts`. The k3s
 integration test points `SSL_CERT_FILE` at `/etc/hematite/tls/ca.crt`
 (the TLS Secret mount) so the MITM CA doubles as the upstream trust anchor.
@@ -259,8 +259,13 @@ make hematite the only reachable egress path.
 
 ## Enforcement
 
-Enabling `egressLockdown` without a `podSelector` matches nothing. Specify a
-selector that targets your sandbox pods:
+**Important:** In Kubernetes, an empty `podSelector` (`{}`) selects **every**
+pod in the namespace — including hematite itself, which would block its own
+upstream egress. `egressLockdown.podSelector` must always be set to a
+non-empty selector that targets only your sandbox pods. The chart will refuse
+to render if it is left empty.
+
+Specify a selector that targets your sandbox pods:
 
 ```yaml
 egressLockdown:
@@ -279,6 +284,11 @@ directly.
 release. For multi-namespace sandboxes, install one hematite release per
 namespace.
 
+**Note:** If `service.management.enabled` is true, the NetworkPolicy also
+allows locked-down pods to reach the (bearer-auth) management port. Consider
+whether that is appropriate for your threat model before enabling both
+together.
+
 ---
 
 ## Testing
@@ -289,7 +299,7 @@ script creates a k3d cluster, builds hematite and the acceptance client image
 at HEAD, imports both into the cluster, mints a test CA, installs the chart
 with `tests/k3s/values.yaml`, and runs the acceptance jobs (steps 1–10).
 It then does a `helm upgrade` that removes one allowlisted domain and verifies
-hematite picks up the new config without dropping traffic (step 11). The
+hematite picks up the new config (step 11). The
 cluster is deleted on exit whether or not the suite passes.
 
 ```sh

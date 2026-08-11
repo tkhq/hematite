@@ -94,6 +94,7 @@ spec:
         - name: tls
           secret:
             secretName: {{ .Values.tls.existingSecret }}
+            defaultMode: 0400
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}

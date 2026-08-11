@@ -1,4 +1,5 @@
 {{- if .Values.egressLockdown.enabled }}
+{{- if not .Values.egressLockdown.podSelector }}{{ fail "egressLockdown.podSelector must be non-empty when egressLockdown.enabled" }}{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
