@@ -27,3 +27,5 @@ lru = "0.12"
 hematite-kernel = { path = "crates/hematite-kernel" }
 hematite-proxy = { path = "crates/hematite-proxy" }
 hematite-dns = { path = "crates/hematite-dns" }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter", "fmt"] }

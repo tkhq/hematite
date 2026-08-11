@@ -4,6 +4,8 @@
 
 #![forbid(unsafe_code)]
 
+mod telemetry;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -63,7 +65,7 @@ async fn spawn_dns(
     let tcp = tokio::net::TcpListener::bind(listen_addr(&dns.listen))
         .await
         .map_err(|e| format!("bind dns tcp {}: {e}", dns.listen))?;
-    eprintln!("hematite: dns server on {}", dns.listen);
+    tracing::info!(listen = %dns.listen, "dns server listening");
     tokio::spawn(server.clone().serve_udp(udp));
     tokio::spawn(server.serve_tcp(tcp));
     Ok(())
@@ -83,6 +85,8 @@ fn main() -> ExitCode {
     let config_path = match (args.next().as_deref(), args.next()) {
         (Some("-config") | Some("--config"), Some(path)) => PathBuf::from(path),
         _ => {
+            // logging config comes from the config file; errors before it
+            // loads go to bare stderr
             eprintln!("usage: hematite -config <path.yaml>");
             return ExitCode::from(2);
         }
@@ -91,6 +95,8 @@ fn main() -> ExitCode {
     let yaml = match std::fs::read_to_string(&config_path) {
         Ok(y) => y,
         Err(e) => {
+            // logging config comes from the config file; errors before it
+            // loads go to bare stderr
             eprintln!("hematite: cannot read {}: {e}", config_path.display());
             return ExitCode::FAILURE;
         }
@@ -98,17 +104,28 @@ fn main() -> ExitCode {
     let config = match load_str(&yaml, &os_env) {
         Ok(c) => c,
         Err(e) => {
+            // logging config comes from the config file; errors before it
+            // loads go to bare stderr
             eprintln!("hematite: {e}");
             return ExitCode::FAILURE;
         }
     };
+
+    // Install the global tracing subscriber now that we have the config.
+    // Pre-config-load errors above go to bare stderr by necessity.
+    let _guard = telemetry::init_telemetry(
+        &config.observability.log.format,
+        &config.log_level,
+        &config.observability.otlp,
+    );
+
     for warning in &config.warnings {
-        eprintln!("hematite: warning: {warning}");
+        tracing::warn!(warning = %warning, "config warning");
     }
     let runtime = match build_runtime(&config) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("hematite: {e}");
+            tracing::error!(error = %e, "failed to build runtime");
             return ExitCode::FAILURE;
         }
     };
@@ -116,7 +133,7 @@ fn main() -> ExitCode {
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("hematite: runtime: {e}");
+            tracing::error!(error = %e, "failed to create tokio runtime");
             return ExitCode::FAILURE;
         }
     };
@@ -133,11 +150,11 @@ fn main() -> ExitCode {
         let http = match tokio::net::TcpListener::bind(listen_addr(&config.listen.http)).await {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("hematite: bind {}: {e}", config.listen.http);
+                tracing::error!(listener = %config.listen.http, error = %e, "bind http failed");
                 return ExitCode::FAILURE;
             }
         };
-        eprintln!("hematite: http listener on {}", config.listen.http);
+        tracing::info!(listener = %config.listen.http, "http listener bound");
         tokio::spawn(hematite_proxy::http::serve_http(
             http,
             state.clone(),
@@ -149,14 +166,14 @@ fn main() -> ExitCode {
             if state.current().cert_cache.is_some() {
                 match tokio::net::TcpListener::bind(listen_addr(listen)).await {
                     Ok(l) => {
-                        eprintln!("hematite: https (MITM) listener on {listen}");
+                        tracing::info!(listener = %listen, "https (MITM) listener bound");
                         tokio::spawn(hematite_proxy::listen::serve_https(
                             l,
                             state.clone(),
                             sink.clone(),
                         ));
                     }
-                    Err(e) => eprintln!("hematite: bind https {listen}: {e}"),
+                    Err(e) => tracing::error!(listener = %listen, error = %e, "bind https failed"),
                 }
             }
         }
@@ -165,14 +182,14 @@ fn main() -> ExitCode {
         if let Some(listen) = &config.listen.tunnel {
             match tokio::net::TcpListener::bind(listen_addr(listen)).await {
                 Ok(l) => {
-                    eprintln!("hematite: tunnel listener on {listen}");
+                    tracing::info!(listener = %listen, "tunnel listener bound");
                     tokio::spawn(hematite_proxy::listen::serve_tunnel(
                         l,
                         state.clone(),
                         sink.clone(),
                     ));
                 }
-                Err(e) => eprintln!("hematite: bind tunnel {listen}: {e}"),
+                Err(e) => tracing::error!(listener = %listen, error = %e, "bind tunnel failed"),
             }
         }
 
@@ -190,7 +207,7 @@ fn main() -> ExitCode {
                     m.inc_dns(outcome);
                 }));
             if let Err(e) = spawn_dns(dns, on_decision).await {
-                eprintln!("hematite: dns: {e}");
+                tracing::error!(error = %e, "dns server failed to start");
             }
         }
 
@@ -200,11 +217,11 @@ fn main() -> ExitCode {
             let mgmt = match tokio::net::TcpListener::bind(listen_addr(listen)).await {
                 Ok(l) => l,
                 Err(e) => {
-                    eprintln!("hematite: bind management {listen}: {e}");
+                    tracing::error!(listener = %listen, error = %e, "bind management failed");
                     return ExitCode::FAILURE;
                 }
             };
-            eprintln!("hematite: management API on {listen}");
+            tracing::info!(listener = %listen, "management API bound");
             tokio::spawn(hematite_proxy::management::serve_management(
                 mgmt,
                 state.clone(),
@@ -217,7 +234,7 @@ fn main() -> ExitCode {
         }
 
         let _ = tokio::signal::ctrl_c().await;
-        eprintln!("hematite: shutting down");
+        tracing::info!("shutting down");
         ExitCode::SUCCESS
     })
 }
