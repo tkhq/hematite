@@ -178,6 +178,44 @@ fn two_segment_env_override_still_works() {
     assert_eq!(c.log_level, "debug");
 }
 
+/// Regression: SAMPLE_RATIO env values "0" and "1" must deserialize as f64, not
+/// be mis-typed as u64 integers (which rely on serde_yaml integer→float coercion).
+#[test]
+fn sample_ratio_env_zero_is_float() {
+    let env = |k: &str| match k {
+        "HEMATITE_OBSERVABILITY_OTLP_SAMPLE_RATIO" => Some("0".to_string()),
+        "HEMATITE_OBSERVABILITY_OTLP_ENDPOINT" => Some("http://c:4318".to_string()),
+        "HEMATITE_OBSERVABILITY_OTLP_ENABLED" => Some("true".to_string()),
+        _ => None,
+    };
+    let c = load_str(OBS_BASE, &env).expect("sample_ratio=0 should load");
+    assert_eq!(c.observability.otlp.sample_ratio, 0.0_f64);
+}
+
+#[test]
+fn sample_ratio_env_one_is_float() {
+    let env = |k: &str| match k {
+        "HEMATITE_OBSERVABILITY_OTLP_SAMPLE_RATIO" => Some("1".to_string()),
+        "HEMATITE_OBSERVABILITY_OTLP_ENDPOINT" => Some("http://c:4318".to_string()),
+        "HEMATITE_OBSERVABILITY_OTLP_ENABLED" => Some("true".to_string()),
+        _ => None,
+    };
+    let c = load_str(OBS_BASE, &env).expect("sample_ratio=1 should load");
+    assert!((c.observability.otlp.sample_ratio - 1.0_f64).abs() < f64::EPSILON);
+}
+
+#[test]
+fn sample_ratio_env_fractional() {
+    let env = |k: &str| match k {
+        "HEMATITE_OBSERVABILITY_OTLP_SAMPLE_RATIO" => Some("0.5".to_string()),
+        "HEMATITE_OBSERVABILITY_OTLP_ENDPOINT" => Some("http://c:4318".to_string()),
+        "HEMATITE_OBSERVABILITY_OTLP_ENABLED" => Some("true".to_string()),
+        _ => None,
+    };
+    let c = load_str(OBS_BASE, &env).expect("sample_ratio=0.5 should load");
+    assert!((c.observability.otlp.sample_ratio - 0.5_f64).abs() < f64::EPSILON);
+}
+
 #[test]
 fn ordering_lint_surfaces_as_warning() {
     let yaml = r#"

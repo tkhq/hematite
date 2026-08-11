@@ -311,10 +311,24 @@ fn apply_env_overrides(value: &mut serde_yaml::Value, env: &dyn Fn(&str) -> Opti
             }
         }
 
-        // Scalars keep their YAML types: try bool, then integer,
-        // then float, then string.
+        // Scalars keep their YAML types: try bool, then numeric, then string.
+        //
+        // For paths that map to f64 fields (currently only `sample_ratio`) we
+        // must produce a YAML float Number even when the raw value is "0" or
+        // "1", because serde_yaml may not coerce an integer Number into an f64
+        // field.  All other paths try u64 first so that integer-typed fields
+        // (e.g. `cert_cache_size`, `max_request_body_bytes`) remain integer
+        // Numbers in the YAML tree.
+        const F64_PATHS: &[&str] = &["observability.otlp.sample_ratio"];
         let typed = if let Ok(b) = raw.parse::<bool>() {
             serde_yaml::Value::Bool(b)
+        } else if F64_PATHS.contains(path) {
+            // For known f64 fields, prefer float representation unconditionally.
+            if let Ok(f) = raw.parse::<f64>() {
+                serde_yaml::Value::Number(serde_yaml::Number::from(f))
+            } else {
+                serde_yaml::Value::String(raw)
+            }
         } else if let Ok(n) = raw.parse::<u64>() {
             serde_yaml::Value::Number(n.into())
         } else if let Ok(f) = raw.parse::<f64>() {
