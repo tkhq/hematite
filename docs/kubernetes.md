@@ -208,10 +208,14 @@ Service. Assuming the chart is installed in the same namespace as the client:
 ```yaml
 env:
   - name: HTTP_PROXY
-    value: http://hematite:80
+    value: http://hematite:8080
   - name: HTTPS_PROXY
-    value: http://hematite:80
+    value: http://hematite:8080
 ```
+
+This requires `service.tunnel.enabled: true` in your Helm values. The tunnel
+listener (port 8080) handles both HTTP and HTTPS via first-byte dispatch:
+plain absolute-form requests for HTTP, and CONNECT tunneling for HTTPS.
 
 For HTTPS interception to work, the client must trust the MITM CA. How to
 install it depends on the runtime:
