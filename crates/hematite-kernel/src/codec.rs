@@ -16,8 +16,16 @@ pub fn base64_encode(input: &[u8]) -> String {
         let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
         out.push(B64[(n >> 18 & 0x3f) as usize] as char);
         out.push(B64[(n >> 12 & 0x3f) as usize] as char);
-        out.push(if chunk.len() > 1 { B64[(n >> 6 & 0x3f) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { B64[(n & 0x3f) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            B64[(n >> 6 & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            B64[(n & 0x3f) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -77,8 +85,16 @@ pub fn percent_encode(bytes: &[u8]) -> String {
             out.push(b as char);
         } else {
             out.push('%');
-            out.push(char::from_digit(u32::from(b >> 4), 16).unwrap().to_ascii_uppercase());
-            out.push(char::from_digit(u32::from(b & 0xf), 16).unwrap().to_ascii_uppercase());
+            out.push(
+                char::from_digit(u32::from(b >> 4), 16)
+                    .unwrap()
+                    .to_ascii_uppercase(),
+            );
+            out.push(
+                char::from_digit(u32::from(b & 0xf), 16)
+                    .unwrap()
+                    .to_ascii_uppercase(),
+            );
         }
     }
     out
@@ -116,7 +132,10 @@ mod tests {
         assert_eq!(base64_decode("cHJveHktdG9rOng=").unwrap(), b"proxy-tok:x");
         assert_eq!(base64_encode(b"sk-real:x"), "c2stcmVhbDp4");
         for s in ["", "f", "fo", "foo", "foob", "fooba", "foobar"] {
-            assert_eq!(base64_decode(&base64_encode(s.as_bytes())).unwrap(), s.as_bytes());
+            assert_eq!(
+                base64_decode(&base64_encode(s.as_bytes())).unwrap(),
+                s.as_bytes()
+            );
         }
         assert!(base64_decode("not base64!!").is_none());
         assert!(base64_decode("abc").is_none()); // not a multiple of 4

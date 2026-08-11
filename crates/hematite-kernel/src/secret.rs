@@ -73,7 +73,12 @@ pub struct ResolveError {
 
 impl fmt::Display for ResolveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "secret source {:?} failed to resolve: {}", self.source.name(), self.reason)
+        write!(
+            f,
+            "secret source {:?} failed to resolve: {}",
+            self.source.name(),
+            self.reason
+        )
     }
 }
 

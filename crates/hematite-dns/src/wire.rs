@@ -117,7 +117,13 @@ fn header(id: u16, rd: bool, aa: bool, rcode: u8, ancount: u16) -> [u8; 12] {
 /// `aa` marks authoritative (static/intercept answers).
 pub fn build_response(query: &Query, answers: &[Answer], aa: bool) -> Vec<u8> {
     let mut msg = Vec::new();
-    msg.extend_from_slice(&header(query.id, query.rd, aa, RCODE_NOERROR, answers.len() as u16));
+    msg.extend_from_slice(&header(
+        query.id,
+        query.rd,
+        aa,
+        RCODE_NOERROR,
+        answers.len() as u16,
+    ));
     msg.extend_from_slice(&query.question_raw);
     for answer in answers {
         // NAME: pointer to the question name at offset 12.
@@ -195,7 +201,14 @@ mod tests {
     #[test]
     fn a_response_shape() {
         let q = parse_query(&query_packet(1, "x.test", TYPE_A)).unwrap();
-        let resp = build_response(&q, &[Answer::A { ip: Ipv4Addr::new(10, 0, 0, 5), ttl: 60 }], true);
+        let resp = build_response(
+            &q,
+            &[Answer::A {
+                ip: Ipv4Addr::new(10, 0, 0, 5),
+                ttl: 60,
+            }],
+            true,
+        );
         // QR + AA + RA set, ANCOUNT=1, and the A rdata is present.
         assert_eq!(resp[2] & 0x80, 0x80, "QR");
         assert_eq!(resp[2] & 0x04, 0x04, "AA");

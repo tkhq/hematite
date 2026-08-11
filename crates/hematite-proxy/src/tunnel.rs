@@ -118,7 +118,10 @@ pub fn parse_socks5_request(req: &[u8]) -> Result<ConnectTarget, Socks5Reject> {
         0x01 => {
             // IPv4.
             let addr = req.get(4..8).ok_or(Socks5Reject::Malformed)?;
-            (format!("{}.{}.{}.{}", addr[0], addr[1], addr[2], addr[3]), 8)
+            (
+                format!("{}.{}.{}.{}", addr[0], addr[1], addr[2], addr[3]),
+                8,
+            )
         }
         0x03 => {
             // Domain: [len][name].
@@ -140,7 +143,9 @@ pub fn parse_socks5_request(req: &[u8]) -> Result<ConnectTarget, Socks5Reject> {
         }
         _ => return Err(Socks5Reject::AddressNotSupported),
     };
-    let port_bytes = req.get(port_offset..port_offset + 2).ok_or(Socks5Reject::Malformed)?;
+    let port_bytes = req
+        .get(port_offset..port_offset + 2)
+        .ok_or(Socks5Reject::Malformed)?;
     let port = u16::from_be_bytes([port_bytes[0], port_bytes[1]]);
     Ok(ConnectTarget { host, port })
 }
@@ -189,16 +194,25 @@ mod tests {
     fn connect_parsing() {
         assert_eq!(
             parse_connect("CONNECT api.example.com:443 HTTP/1.1\r\nHost: x\r\n\r\n"),
-            Some(ConnectTarget { host: "api.example.com".into(), port: 443 })
+            Some(ConnectTarget {
+                host: "api.example.com".into(),
+                port: 443
+            })
         );
         // Default port 443.
         assert_eq!(
             parse_connect("CONNECT api.example.com HTTP/1.1\r\n\r\n"),
-            Some(ConnectTarget { host: "api.example.com".into(), port: 443 })
+            Some(ConnectTarget {
+                host: "api.example.com".into(),
+                port: 443
+            })
         );
         assert_eq!(
             parse_connect("CONNECT [2001:db8::1]:8443 HTTP/1.1\r\n\r\n"),
-            Some(ConnectTarget { host: "2001:db8::1".into(), port: 8443 })
+            Some(ConnectTarget {
+                host: "2001:db8::1".into(),
+                port: 8443
+            })
         );
         assert_eq!(parse_connect("GET / HTTP/1.1\r\n\r\n"), None);
     }
@@ -206,9 +220,15 @@ mod tests {
     #[test]
     fn socks5_method_selection() {
         // nmethods=1, method 0x00 (no-auth).
-        assert_eq!(parse_socks5_methods(&[0x01, 0x00]), Some(Socks5Method::NoAuth));
+        assert_eq!(
+            parse_socks5_methods(&[0x01, 0x00]),
+            Some(Socks5Method::NoAuth)
+        );
         // only method 0x02 (user/pass) → unacceptable.
-        assert_eq!(parse_socks5_methods(&[0x01, 0x02]), Some(Socks5Method::Unacceptable));
+        assert_eq!(
+            parse_socks5_methods(&[0x01, 0x02]),
+            Some(Socks5Method::Unacceptable)
+        );
     }
 
     #[test]
@@ -217,7 +237,10 @@ mod tests {
         let v4 = [0x05, 0x01, 0x00, 0x01, 10, 0, 0, 5, 0x01, 0xBB];
         assert_eq!(
             parse_socks5_request(&v4),
-            Ok(ConnectTarget { host: "10.0.0.5".into(), port: 443 })
+            Ok(ConnectTarget {
+                host: "10.0.0.5".into(),
+                port: 443
+            })
         );
         // Domain api.example.com:443.
         let host = b"api.example.com";
@@ -226,14 +249,23 @@ mod tests {
         dom.extend_from_slice(&443u16.to_be_bytes());
         assert_eq!(
             parse_socks5_request(&dom),
-            Ok(ConnectTarget { host: "api.example.com".into(), port: 443 })
+            Ok(ConnectTarget {
+                host: "api.example.com".into(),
+                port: 443
+            })
         );
         // Non-CONNECT command.
         let bind = [0x05, 0x02, 0x00, 0x01, 10, 0, 0, 5, 0x01, 0xBB];
-        assert_eq!(parse_socks5_request(&bind), Err(Socks5Reject::CommandNotSupported));
+        assert_eq!(
+            parse_socks5_request(&bind),
+            Err(Socks5Reject::CommandNotSupported)
+        );
         // Unknown address type.
         let bad_atyp = [0x05, 0x01, 0x00, 0x09, 0, 0];
-        assert_eq!(parse_socks5_request(&bad_atyp), Err(Socks5Reject::AddressNotSupported));
+        assert_eq!(
+            parse_socks5_request(&bad_atyp),
+            Err(Socks5Reject::AddressNotSupported)
+        );
     }
 
     #[test]

@@ -85,9 +85,13 @@ pub fn conformance_record(summary: &RequestSummary, outcome: &PipelineOutcome) -
             None,
             None,
         ),
-        Outcome::Stub { by, response } => {
-            (Action::Stub, Some(response.status), None, Some(by.clone()), None)
-        }
+        Outcome::Stub { by, response } => (
+            Action::Stub,
+            Some(response.status),
+            None,
+            Some(by.clone()),
+            None,
+        ),
         Outcome::Error { by: _, message } => {
             (Action::Error, Some(502), None, None, Some(message.clone()))
         }

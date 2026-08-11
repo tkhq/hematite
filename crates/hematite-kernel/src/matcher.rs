@@ -49,7 +49,10 @@ impl DomainGlob {
                     "`*` is only valid as the leading label: {pattern:?}"
                 )));
             }
-            Ok(DomainGlob { suffix: rest.to_string(), wildcard: true })
+            Ok(DomainGlob {
+                suffix: rest.to_string(),
+                wildcard: true,
+            })
         } else if p.contains('*') {
             Err(MatchConfigError(format!(
                 "`*` is only valid as the leading label: {pattern:?}"
@@ -57,7 +60,10 @@ impl DomainGlob {
         } else if p.is_empty() {
             Err(MatchConfigError("empty domain pattern".into()))
         } else {
-            Ok(DomainGlob { suffix: p, wildcard: false })
+            Ok(DomainGlob {
+                suffix: p,
+                wildcard: false,
+            })
         }
     }
 
@@ -127,7 +133,9 @@ impl Cidr {
     /// The host clause form: true only when `host` is an IP literal inside
     /// the prefix.
     pub fn matches_host(&self, host: &str) -> bool {
-        host.parse::<IpAddr>().map(|ip| self.contains(ip)).unwrap_or(false)
+        host.parse::<IpAddr>()
+            .map(|ip| self.contains(ip))
+            .unwrap_or(false)
     }
 }
 
@@ -140,7 +148,9 @@ pub struct PathGlob {
 
 impl PathGlob {
     pub fn parse(pattern: &str) -> Result<Self, MatchConfigError> {
-        Ok(PathGlob { pattern: pattern.to_string() })
+        Ok(PathGlob {
+            pattern: pattern.to_string(),
+        })
     }
 
     pub fn matches(&self, path: &str) -> bool {

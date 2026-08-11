@@ -16,7 +16,12 @@ impl Clock for MockClock {
 }
 
 fn file_source(path: &str, ttl: Option<Duration>, failure_ttl: Option<Duration>) -> SourceRef {
-    SourceRef { kind: SourceKind::File { path: path.into() }, json_key: None, ttl, failure_ttl }
+    SourceRef {
+        kind: SourceKind::File { path: path.into() },
+        json_key: None,
+        ttl,
+        failure_ttl,
+    }
 }
 
 // The resolved `Secret` is opaque (INV-1), so the cache behavior is asserted
@@ -54,7 +59,10 @@ fn file_ttl_refresh_failure_and_stale_serve() {
     // prior success means the stale value is still served.
     std::fs::remove_file(&path).unwrap();
     clock.store(22_000, Ordering::SeqCst);
-    assert!(resolver.resolve(&src).is_ok(), "stale-serve on refresh failure");
+    assert!(
+        resolver.resolve(&src).is_ok(),
+        "stale-serve on refresh failure"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -73,5 +81,8 @@ fn failure_is_cached_then_retried() {
     // After failure_ttl: retried (still failing here, but the retry path
     // ran — no stale value exists to serve).
     clock.store(6_000, Ordering::SeqCst);
-    assert!(resolver.resolve(&missing).is_err(), "retry after failure_ttl");
+    assert!(
+        resolver.resolve(&missing).is_err(),
+        "retry after failure_ttl"
+    );
 }

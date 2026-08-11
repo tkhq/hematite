@@ -12,7 +12,20 @@ use hematite_dns::DnsServer;
 use hematite_kernel::matcher::DomainGlob;
 
 fn query_packet(id: u16, name: &str, qtype: u16) -> Vec<u8> {
-    let mut msg = vec![(id >> 8) as u8, id as u8, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+    let mut msg = vec![
+        (id >> 8) as u8,
+        id as u8,
+        0x01,
+        0x00,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ];
     for label in name.split('.') {
         msg.push(label.len() as u8);
         msg.extend_from_slice(label.as_bytes());
@@ -37,7 +50,10 @@ fn first_a(resp: &[u8]) -> Option<Ipv4Addr> {
 #[tokio::test(flavor = "multi_thread")]
 async fn intercept_and_static_over_udp() {
     let mut records = HashMap::new();
-    records.insert("db.internal.corp".to_string(), StaticRecord::A(Ipv4Addr::new(10, 0, 0, 9)));
+    records.insert(
+        "db.internal.corp".to_string(),
+        StaticRecord::A(Ipv4Addr::new(10, 0, 0, 9)),
+    );
     let config = DnsConfig {
         proxy_ip: Ipv4Addr::new(172, 20, 0, 2),
         passthrough: vec![DomainGlob::parse("*.internal.corp").unwrap()],
@@ -55,15 +71,26 @@ async fn intercept_and_static_over_udp() {
     client.connect(server_addr).await.unwrap();
 
     // Intercepted name → proxy_ip.
-    client.send(&query_packet(1, "anything.example", TYPE_A)).await.unwrap();
+    client
+        .send(&query_packet(1, "anything.example", TYPE_A))
+        .await
+        .unwrap();
     let mut buf = vec![0u8; 512];
     let n = client.recv(&mut buf).await.unwrap();
     let resp = &buf[..n];
-    assert_eq!(parse_query(&query_packet(1, "anything.example", TYPE_A)).unwrap().id, 1);
+    assert_eq!(
+        parse_query(&query_packet(1, "anything.example", TYPE_A))
+            .unwrap()
+            .id,
+        1
+    );
     assert_eq!(first_a(resp), Some(Ipv4Addr::new(172, 20, 0, 2)));
 
     // Static record inside the passthrough zone → static wins.
-    client.send(&query_packet(2, "db.internal.corp", TYPE_A)).await.unwrap();
+    client
+        .send(&query_packet(2, "db.internal.corp", TYPE_A))
+        .await
+        .unwrap();
     let n = client.recv(&mut buf).await.unwrap();
     assert_eq!(first_a(&buf[..n]), Some(Ipv4Addr::new(10, 0, 0, 9)));
 }

@@ -128,11 +128,9 @@ impl SigningCa {
 
         let now = SystemTime::now();
         params.not_before = (now - std::time::Duration::from_secs(60)).into();
-        params.not_after =
-            (now + std::time::Duration::from_secs(self.expiry_hours * 3600)).into();
+        params.not_after = (now + std::time::Duration::from_secs(self.expiry_hours * 3600)).into();
 
-        let leaf_key =
-            KeyPair::generate().map_err(|e| TlsError(format!("leaf keygen: {e}")))?;
+        let leaf_key = KeyPair::generate().map_err(|e| TlsError(format!("leaf keygen: {e}")))?;
         let leaf = params
             .signed_by(&leaf_key, &self.ca_cert, &self.key)
             .map_err(|e| TlsError(format!("leaf sign: {e}")))?;

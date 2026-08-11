@@ -67,7 +67,10 @@ impl Default for EnvFileResolver {
 
 impl EnvFileResolver {
     pub fn with_clock(clock: Box<dyn Clock>) -> Self {
-        EnvFileResolver { cache: Mutex::new(HashMap::new()), clock }
+        EnvFileResolver {
+            cache: Mutex::new(HashMap::new()),
+            clock,
+        }
     }
 
     /// Read the raw source value (no caching), applying `json_key`.
@@ -95,9 +98,11 @@ fn apply_json_key(value: Vec<u8>, source: &SourceRef) -> Result<Vec<u8>, Resolve
     match &source.json_key {
         None => Ok(value),
         Some(key) => {
-            let parsed: serde_json::Value = serde_json::from_slice(&value).map_err(|_| {
-                ResolveError { source: source.clone(), reason: "value is not JSON".into() }
-            })?;
+            let parsed: serde_json::Value =
+                serde_json::from_slice(&value).map_err(|_| ResolveError {
+                    source: source.clone(),
+                    reason: "value is not JSON".into(),
+                })?;
             match parsed.get(key).and_then(|v| v.as_str()) {
                 Some(s) => Ok(s.as_bytes().to_vec()),
                 None => Err(ResolveError {
@@ -114,8 +119,10 @@ impl SecretResolver for EnvFileResolver {
         let now = self.clock.now_ms();
         let name = source.name().to_string();
         let ttl_ms = source.ttl.map(|d| d.as_millis() as u64);
-        let failure_ttl_ms =
-            source.failure_ttl.unwrap_or(DEFAULT_FAILURE_TTL).as_millis() as u64;
+        let failure_ttl_ms = source
+            .failure_ttl
+            .unwrap_or(DEFAULT_FAILURE_TTL)
+            .as_millis() as u64;
 
         let mut cache = self.cache.lock().expect("resolver cache");
         if let Some(entry) = cache.get(&name) {
@@ -127,19 +134,29 @@ impl SecretResolver for EnvFileResolver {
                 // Expired: attempt a refresh.
                 match Self::read(source) {
                     Ok(bytes) => {
-                        cache.insert(name, Entry { value: Some(bytes.clone()), stamp: now, ok: true });
+                        cache.insert(
+                            name,
+                            Entry {
+                                value: Some(bytes.clone()),
+                                stamp: now,
+                                ok: true,
+                            },
+                        );
                         return Ok(Secret::new(bytes));
                     }
                     Err(_) => {
                         // Refresh failed after a prior success: serve the
                         // stale value and schedule the next retry at ttl/2.
                         let stale = entry.value.clone().unwrap_or_default();
-                        let retry_stamp = ttl_ms
-                            .map(|ttl| now.saturating_sub(ttl / 2))
-                            .unwrap_or(now);
+                        let retry_stamp =
+                            ttl_ms.map(|ttl| now.saturating_sub(ttl / 2)).unwrap_or(now);
                         cache.insert(
                             name,
-                            Entry { value: Some(stale.clone()), stamp: retry_stamp, ok: true },
+                            Entry {
+                                value: Some(stale.clone()),
+                                stamp: retry_stamp,
+                                ok: true,
+                            },
                         );
                         return Ok(Secret::new(stale));
                     }
@@ -158,11 +175,25 @@ impl SecretResolver for EnvFileResolver {
         // No entry, or a failure cache that has expired: read fresh.
         match Self::read(source) {
             Ok(bytes) => {
-                cache.insert(name, Entry { value: Some(bytes.clone()), stamp: now, ok: true });
+                cache.insert(
+                    name,
+                    Entry {
+                        value: Some(bytes.clone()),
+                        stamp: now,
+                        ok: true,
+                    },
+                );
                 Ok(Secret::new(bytes))
             }
             Err(e) => {
-                cache.insert(name, Entry { value: None, stamp: now, ok: false });
+                cache.insert(
+                    name,
+                    Entry {
+                        value: None,
+                        stamp: now,
+                        ok: false,
+                    },
+                );
                 Err(e)
             }
         }

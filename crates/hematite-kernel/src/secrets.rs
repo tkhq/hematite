@@ -120,9 +120,8 @@ impl Transform for Secrets {
             }
 
             // The secret's bytes never leave this closure (INV-1).
-            let scan = resolved.expose_for_swap(|secret_bytes| {
-                scan_and_swap(req, secret, secret_bytes)
-            });
+            let scan =
+                resolved.expose_for_swap(|secret_bytes| scan_and_swap(req, secret, secret_bytes));
 
             // Part 04 §3.3: require + rules matched but nothing swapped
             // (the proxy token was absent) → Reject.

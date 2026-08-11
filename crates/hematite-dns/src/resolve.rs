@@ -48,7 +48,10 @@ pub fn resolve(config: &DnsConfig, query: &Query) -> Decision {
         return match record {
             StaticRecord::A(ip) => {
                 if query.qtype == TYPE_A {
-                    Decision::Answer(vec![Answer::A { ip: *ip, ttl: config.ttl }])
+                    Decision::Answer(vec![Answer::A {
+                        ip: *ip,
+                        ttl: config.ttl,
+                    }])
                 } else {
                     // Name exists but not for this type → empty NOERROR.
                     Decision::EmptyNoError
@@ -75,7 +78,10 @@ pub fn resolve(config: &DnsConfig, query: &Query) -> Decision {
     // 3. Intercept — A → proxy_ip; AAAA and everything else → empty NOERROR
     //    (so dual-stack clients fall back to the A record, Part 06 §3).
     if query.qtype == TYPE_A {
-        Decision::Answer(vec![Answer::A { ip: config.proxy_ip, ttl: config.ttl }])
+        Decision::Answer(vec![Answer::A {
+            ip: config.proxy_ip,
+            ttl: config.ttl,
+        }])
     } else {
         let _ = TYPE_AAAA;
         Decision::EmptyNoError
@@ -89,7 +95,10 @@ mod tests {
 
     fn config() -> DnsConfig {
         let mut records = HashMap::new();
-        records.insert("db.internal.corp".to_string(), StaticRecord::A(Ipv4Addr::new(10, 0, 0, 9)));
+        records.insert(
+            "db.internal.corp".to_string(),
+            StaticRecord::A(Ipv4Addr::new(10, 0, 0, 9)),
+        );
         DnsConfig {
             proxy_ip: Ipv4Addr::new(172, 20, 0, 2),
             passthrough: vec![DomainGlob::parse("*.internal.corp").unwrap()],

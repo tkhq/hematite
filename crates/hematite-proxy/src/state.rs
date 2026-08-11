@@ -32,14 +32,23 @@ impl Guard {
     pub fn new(prefixes: &[String]) -> Result<Self, String> {
         let deny = prefixes
             .iter()
-            .map(|p| Cidr::parse(p).map(|c| (c, p.clone())).map_err(|e| e.to_string()))
+            .map(|p| {
+                Cidr::parse(p)
+                    .map(|c| (c, p.clone()))
+                    .map_err(|e| e.to_string())
+            })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Guard { deny })
     }
 
     pub fn default_set() -> Self {
-        Guard::new(&Self::DEFAULT_DENY.iter().map(|s| s.to_string()).collect::<Vec<_>>())
-            .expect("default deny set compiles")
+        Guard::new(
+            &Self::DEFAULT_DENY
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>(),
+        )
+        .expect("default deny set compiles")
     }
 
     /// An explicitly empty list disables the guard (Part 07 §2); that is
@@ -47,7 +56,10 @@ impl Guard {
     pub fn check(&self, ip: IpAddr) -> Result<(), GuardDenial> {
         for (cidr, prefix) in &self.deny {
             if cidr.contains(ip) {
-                return Err(GuardDenial { denied_addr: ip.to_string(), prefix: prefix.clone() });
+                return Err(GuardDenial {
+                    denied_addr: ip.to_string(),
+                    prefix: prefix.clone(),
+                });
             }
         }
         Ok(())
@@ -84,7 +96,9 @@ pub fn native_upstream_config() -> Result<Arc<ClientConfig>, String> {
     for cert in result.certs {
         let _ = roots.add(cert);
     }
-    let config = ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
+    let config = ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
     Ok(Arc::new(config))
 }
 

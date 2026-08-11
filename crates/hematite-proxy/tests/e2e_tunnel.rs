@@ -91,7 +91,10 @@ async fn connect_tunnel_plain_http_inner() {
     let mut buf = [0u8; 128];
     let n = stream.read(&mut buf).await.unwrap();
     let established = String::from_utf8_lossy(&buf[..n]);
-    assert!(established.starts_with("HTTP/1.1 200"), "CONNECT reply: {established}");
+    assert!(
+        established.starts_with("HTTP/1.1 200"),
+        "CONNECT reply: {established}"
+    );
 
     // Inner plain-HTTP request over the established tunnel.
     stream
@@ -107,7 +110,10 @@ async fn connect_tunnel_plain_http_inner() {
 
     // The inner request's record is mode=tunnel and carries the tunnel group.
     let records = sink.records();
-    let inner = records.iter().find(|r| r.path == "/inner").expect("inner record");
+    let inner = records
+        .iter()
+        .find(|r| r.path == "/inner")
+        .expect("inner record");
     assert_eq!(inner.mode, Mode::Tunnel);
     assert_eq!(inner.action, Action::Allow);
     let tunnel = inner.tunnel.as_ref().expect("tunnel group");
@@ -126,10 +132,16 @@ async fn connect_to_blocked_host_rejected_at_handshake() {
     let mut buf = [0u8; 128];
     let n = stream.read(&mut buf).await.unwrap();
     let reply = String::from_utf8_lossy(&buf[..n]);
-    assert!(reply.starts_with("HTTP/1.1 403"), "expected 403, got: {reply}");
+    assert!(
+        reply.starts_with("HTTP/1.1 403"),
+        "expected 403, got: {reply}"
+    );
 
     let records = sink.records();
-    let rec = records.iter().find(|r| r.host == "blocked.example").expect("reject record");
+    let rec = records
+        .iter()
+        .find(|r| r.host == "blocked.example")
+        .expect("reject record");
     assert_eq!(rec.action, Action::Reject);
     assert_eq!(rec.rejected_by.as_deref(), Some("allowlist"));
     assert_eq!(rec.method, "CONNECT");
@@ -167,5 +179,7 @@ async fn socks5_connect_plain_http_inner() {
     assert!(String::from_utf8_lossy(&response).contains("echo:/viasocks"));
 
     let records = sink.records();
-    assert!(records.iter().any(|r| r.path == "/viasocks" && r.mode == Mode::Tunnel));
+    assert!(records
+        .iter()
+        .any(|r| r.path == "/viasocks" && r.mode == Mode::Tunnel));
 }

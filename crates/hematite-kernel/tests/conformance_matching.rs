@@ -20,7 +20,11 @@ fn domain_globs() {
             .unwrap_or_else(|e| panic!("pattern {pattern:?} must compile: {e}"));
         let host = row["host"].as_str().unwrap();
         let want = row["match"].as_bool().unwrap();
-        assert_eq!(glob.matches(host), want, "pattern {pattern:?} vs host {host:?}");
+        assert_eq!(
+            glob.matches(host),
+            want,
+            "pattern {pattern:?} vs host {host:?}"
+        );
     }
 }
 
@@ -30,14 +34,21 @@ fn cidrs() {
     for row in vectors["cidrs"].as_array().unwrap() {
         let cidr = row["cidr"].as_str().unwrap();
         if row["config_error"].as_bool() == Some(true) {
-            assert!(Cidr::parse(cidr).is_err(), "cidr {cidr:?} must be rejected at config load");
+            assert!(
+                Cidr::parse(cidr).is_err(),
+                "cidr {cidr:?} must be rejected at config load"
+            );
             continue;
         }
         let compiled =
             Cidr::parse(cidr).unwrap_or_else(|e| panic!("cidr {cidr:?} must compile: {e}"));
         let host = row["host"].as_str().unwrap();
         let want = row["match"].as_bool().unwrap();
-        assert_eq!(compiled.matches_host(host), want, "cidr {cidr:?} vs host {host:?}");
+        assert_eq!(
+            compiled.matches_host(host),
+            want,
+            "cidr {cidr:?} vs host {host:?}"
+        );
     }
 }
 
@@ -50,7 +61,11 @@ fn path_globs() {
             .unwrap_or_else(|e| panic!("pattern {pattern:?} must compile: {e}"));
         let path = row["path"].as_str().unwrap();
         let want = row["match"].as_bool().unwrap();
-        assert_eq!(glob.matches(path), want, "pattern {pattern:?} vs path {path:?}");
+        assert_eq!(
+            glob.matches(path),
+            want,
+            "pattern {pattern:?} vs path {path:?}"
+        );
     }
 }
 
@@ -63,6 +78,10 @@ fn header_names() {
             .unwrap_or_else(|e| panic!("entry {entry:?} must compile: {e}"));
         let header = row["header"].as_str().unwrap();
         let want = row["match"].as_bool().unwrap();
-        assert_eq!(compiled.matches(header), want, "entry {entry:?} vs header {header:?}");
+        assert_eq!(
+            compiled.matches(header),
+            want,
+            "entry {entry:?} vs header {header:?}"
+        );
     }
 }

@@ -21,7 +21,11 @@ type OutBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
 fn text(status: StatusCode, body: &str) -> Response<OutBody> {
     Response::builder()
         .status(status)
-        .body(Full::new(Bytes::from(body.to_string())).map_err(|e| match e {}).boxed())
+        .body(
+            Full::new(Bytes::from(body.to_string()))
+                .map_err(|e| match e {})
+                .boxed(),
+        )
         .expect("static response")
 }
 
@@ -56,7 +60,10 @@ pub fn reload(
         Err(e) => return (422, e.to_string()),
     };
     if config.listen != *current_listen {
-        return (422, "listener addresses are not reloadable in v1 (Part 09 §4)".into());
+        return (
+            422,
+            "listener addresses are not reloadable in v1 (Part 09 §4)".into(),
+        );
     }
     match build_runtime(&config) {
         Ok(runtime) => {
@@ -94,7 +101,10 @@ pub async fn serve_management(
                 let config_path = config_path.clone();
                 async move {
                     if req.method() != hyper::Method::POST || req.uri().path() != "/v1/reload" {
-                        return Ok::<_, std::convert::Infallible>(text(StatusCode::NOT_FOUND, "not found"));
+                        return Ok::<_, std::convert::Infallible>(text(
+                            StatusCode::NOT_FOUND,
+                            "not found",
+                        ));
                     }
                     let authorized = req
                         .headers()
@@ -109,7 +119,12 @@ pub async fn serve_management(
                     // Spawned so the reload completes even if the client
                     // disconnects (Part 09 §4).
                     let handle = tokio::spawn(async move {
-                        reload(&config_path, &current_listen, &state, &crate::config::os_env)
+                        reload(
+                            &config_path,
+                            &current_listen,
+                            &state,
+                            &crate::config::os_env,
+                        )
                     });
                     let (status, message) = match handle.await {
                         Ok(r) => r,

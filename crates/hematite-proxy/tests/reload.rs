@@ -85,7 +85,10 @@ fn reload_swaps_rejects_and_survives() {
     write_config(&path, BROKEN);
     let (status, message) = reload(&path, &config.listen, &state, &no_env);
     assert_eq!(status, 422, "{message}");
-    assert!(allows(&state, "two.example"), "fail-closed: surviving config untouched");
+    assert!(
+        allows(&state, "two.example"),
+        "fail-closed: surviving config untouched"
+    );
 
     // Changed listener address → 422.
     write_config(&path, &format!("{V2}\nproxy:\n  http_listen: \":8081\"\n"));

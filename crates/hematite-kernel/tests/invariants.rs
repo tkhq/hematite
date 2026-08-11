@@ -23,7 +23,10 @@ fn summary(host: &str, method: &str, path: &str, headers: Vec<(&str, &str)>) -> 
         path: path.into(),
         query: String::new(),
         headers: Headers::new(
-            headers.into_iter().map(|(n, v)| (n.to_string(), v.to_string())).collect(),
+            headers
+                .into_iter()
+                .map(|(n, v)| (n.to_string(), v.to_string()))
+                .collect(),
         ),
         body: Body::new(Vec::new(), false),
         sni: Some(host.into()),
@@ -67,7 +70,12 @@ fn header_allowlist_strips_and_annotates_sorted() {
         "api.example.com",
         "GET",
         "/",
-        vec![("X-Zed", "1"), ("Accept", "*/*"), ("x-keep-this", "2"), ("X-Alpha", "3")],
+        vec![
+            ("X-Zed", "1"),
+            ("Accept", "*/*"),
+            ("x-keep-this", "2"),
+            ("X-Alpha", "3"),
+        ],
     );
     let outcome = built.pipeline.evaluate_request(&mut req);
     assert!(matches!(outcome.outcome, Outcome::Continue(_)));
@@ -91,7 +99,10 @@ fn body_capture_attaches_group_and_truncates() {
     let mut req = summary("api.example.com", "POST", "/v1", vec![]);
     req.body = Body::new(b"123456".to_vec(), false);
     let outcome = built.pipeline.evaluate_request(&mut req);
-    let capture = outcome.body_capture.as_ref().expect("capture group present");
+    let capture = outcome
+        .body_capture
+        .as_ref()
+        .expect("capture group present");
     assert_eq!(capture.request_body, "1234");
     assert!(capture.request_body_truncated);
     let trace = &outcome.request_traces[1];
@@ -112,7 +123,10 @@ fn config_without_allowlist_fails_validation() {
         { "name": "header_allowlist", "config": { "headers": ["Accept"] } }
     ]))
     .unwrap();
-    assert!(build_pipeline(&specs).is_err(), "default-deny is structural (Part 04 §1)");
+    assert!(
+        build_pipeline(&specs).is_err(),
+        "default-deny is structural (Part 04 §1)"
+    );
 }
 
 #[test]
@@ -131,7 +145,10 @@ fn unknown_transform_fails_validation() {
         { "name": "judge", "config": {} }
     ]))
     .unwrap();
-    assert!(build_pipeline(&specs).is_err(), "the v1 registry is closed (Part 03 §5)");
+    assert!(
+        build_pipeline(&specs).is_err(),
+        "the v1 registry is closed (Part 03 §5)"
+    );
 }
 
 #[test]

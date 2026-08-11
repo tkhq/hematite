@@ -21,7 +21,10 @@ fn summary_from(request: &Value) -> RequestSummary {
         .map(|a| {
             a.iter()
                 .map(|p| {
-                    (p[0].as_str().unwrap().to_string(), p[1].as_str().unwrap().to_string())
+                    (
+                        p[0].as_str().unwrap().to_string(),
+                        p[1].as_str().unwrap().to_string(),
+                    )
                 })
                 .collect()
         })
@@ -34,7 +37,10 @@ fn summary_from(request: &Value) -> RequestSummary {
         path: request["path"].as_str().unwrap_or("/").to_string(),
         query: request["query"].as_str().unwrap_or("").to_string(),
         headers: Headers::new(headers),
-        body: Body::new(request["body"].as_str().unwrap_or("").as_bytes().to_vec(), false),
+        body: Body::new(
+            request["body"].as_str().unwrap_or("").as_bytes().to_vec(),
+            false,
+        ),
         sni: None,
         remote_addr: None,
     }
@@ -73,17 +79,18 @@ fn secrets_swap_vectors() {
 
         // Verdict.
         let want_verdict = expect["verdict"].as_str().unwrap();
-        let secrets_trace = outcome
-            .request_traces
-            .iter()
-            .find(|t| t.name == "secrets");
+        let secrets_trace = outcome.request_traces.iter().find(|t| t.name == "secrets");
         match want_verdict {
             "reject" => {
                 assert!(
                     matches!(outcome.outcome, Outcome::Reject { .. }),
                     "case {id}: expected Reject"
                 );
-                assert_eq!(secrets_trace.unwrap().verdict, TraceVerdict::Reject, "case {id}");
+                assert_eq!(
+                    secrets_trace.unwrap().verdict,
+                    TraceVerdict::Reject,
+                    "case {id}"
+                );
                 continue; // rejects carry no swap annotations
             }
             "continue" => {
@@ -125,7 +132,10 @@ fn secrets_swap_vectors() {
         // Annotations on the secrets trace.
         let trace = secrets_trace.unwrap();
         let got_annotations = Value::Object(trace.annotations.clone());
-        assert_eq!(got_annotations, expect["annotations"], "case {id}: annotations");
+        assert_eq!(
+            got_annotations, expect["annotations"],
+            "case {id}: annotations"
+        );
 
         // INV-1: the resolved value never appears in the serialized trace.
         assert!(

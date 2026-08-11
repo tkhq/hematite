@@ -14,7 +14,9 @@ use crate::matcher::{
 use crate::pipeline::{Pipeline, Transform};
 use crate::secret::{SecretResolver, SourceKind, SourceRef};
 use crate::secrets::{SecretSpec, Secrets};
-use crate::transforms::{Allowlist, Annotate, AnnotateGroup, BodyCaptureTransform, HeaderAllowlist};
+use crate::transforms::{
+    Allowlist, Annotate, AnnotateGroup, BodyCaptureTransform, HeaderAllowlist,
+};
 
 #[derive(Debug)]
 pub struct ConfigError(pub String);
@@ -184,7 +186,9 @@ fn parse_duration(s: &str) -> Result<Duration, ConfigError> {
         "ms" => Ok(Duration::from_millis(n)),
         "s" => Ok(Duration::from_secs(n)),
         "m" => Ok(Duration::from_secs(n * 60)),
-        other => Err(ConfigError(format!("invalid duration unit {other:?} in {s:?}"))),
+        other => Err(ConfigError(format!(
+            "invalid duration unit {other:?} in {s:?}"
+        ))),
     }
 }
 
@@ -197,7 +201,12 @@ impl SourceSpec {
                 ttl: None,
                 failure_ttl: None,
             },
-            SourceSpec::File { path, json_key, ttl, failure_ttl } => SourceRef {
+            SourceSpec::File {
+                path,
+                json_key,
+                ttl,
+                failure_ttl,
+            } => SourceRef {
                 kind: SourceKind::File { path },
                 json_key,
                 ttl: ttl.as_deref().map(parse_duration).transpose()?,
@@ -252,7 +261,8 @@ fn build_transform(
             let c: AllowlistConfig = deser("allowlist", &spec.config)?;
             if c.domains.is_empty() && c.cidrs.is_empty() {
                 return Err(ConfigError(
-                    "allowlist: at least one of domains/cidrs must be non-empty (Part 04 §1)".into(),
+                    "allowlist: at least one of domains/cidrs must be non-empty (Part 04 §1)"
+                        .into(),
                 ));
             }
             Ok(Box::new(Allowlist {
@@ -261,7 +271,11 @@ fn build_transform(
                     .iter()
                     .map(|d| DomainGlob::parse(d))
                     .collect::<Result<_, _>>()?,
-                cidrs: c.cidrs.iter().map(|x| Cidr::parse(x)).collect::<Result<_, _>>()?,
+                cidrs: c
+                    .cidrs
+                    .iter()
+                    .map(|x| Cidr::parse(x))
+                    .collect::<Result<_, _>>()?,
                 warn: c.warn,
             }))
         }
@@ -279,7 +293,10 @@ fn build_transform(
                             HeaderNameEntry::Regex(_) => unreachable!("allow_regex = false"),
                         })
                         .collect::<Result<Vec<_>, MatchConfigError>>()?;
-                    Ok(AnnotateGroup { rules: compile_rules(&g.rules)?, headers })
+                    Ok(AnnotateGroup {
+                        rules: compile_rules(&g.rules)?,
+                        headers,
+                    })
                 })
                 .collect::<Result<Vec<_>, ConfigError>>()?;
             Ok(Box::new(Annotate { groups }))
@@ -287,7 +304,9 @@ fn build_transform(
         "header_allowlist" => {
             let c: HeaderAllowlistConfig = deser("header_allowlist", &spec.config)?;
             if c.headers.is_empty() {
-                return Err(ConfigError("header_allowlist: headers must be non-empty".into()));
+                return Err(ConfigError(
+                    "header_allowlist: headers must be non-empty".into(),
+                ));
             }
             Ok(Box::new(HeaderAllowlist {
                 entries: c
@@ -371,7 +390,10 @@ fn build_pipeline_inner(
         .iter()
         .map(|s| build_transform(s, resolver))
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(BuiltPipeline { pipeline: Pipeline::new(transforms), warnings })
+    Ok(BuiltPipeline {
+        pipeline: Pipeline::new(transforms),
+        warnings,
+    })
 }
 
 /// Warn when `body_capture` follows a `secrets` entry with
@@ -382,7 +404,10 @@ fn body_capture_ordering_lint(specs: &[TransformSpec], warnings: &mut Vec<String
             && s.config
                 .get("secrets")
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().any(|e| e.get("match_body").and_then(|b| b.as_bool()) == Some(true)))
+                .map(|arr| {
+                    arr.iter()
+                        .any(|e| e.get("match_body").and_then(|b| b.as_bool()) == Some(true))
+                })
                 .unwrap_or(false)
     });
     let body_capture_pos = specs.iter().position(|s| s.name == "body_capture");

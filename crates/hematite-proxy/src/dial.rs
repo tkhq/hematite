@@ -80,5 +80,7 @@ pub async fn connect_upstream(
             Err(e) => return Err(DialError::Failed(format!("upstream TLS: {e}"))),
         }
     }
-    Err(DialError::Failed(last_err.unwrap_or_else(|| "dial failed".into())))
+    Err(DialError::Failed(
+        last_err.unwrap_or_else(|| "dial failed".into()),
+    ))
 }

@@ -79,7 +79,10 @@ impl MapResolver {
                     .collect()
             })
             .unwrap_or_default();
-        MapResolver { map, failing: HashSet::new() }
+        MapResolver {
+            map,
+            failing: HashSet::new(),
+        }
     }
 
     pub fn with_failing(mut self, name: &str) -> Self {
@@ -92,11 +95,17 @@ impl SecretResolver for MapResolver {
     fn resolve(&self, source: &SourceRef) -> Result<Secret, ResolveError> {
         let name = source.name();
         if self.failing.contains(name) {
-            return Err(ResolveError { source: source.clone(), reason: "stubbed failure".into() });
+            return Err(ResolveError {
+                source: source.clone(),
+                reason: "stubbed failure".into(),
+            });
         }
         match self.map.get(name) {
             Some(v) => Ok(Secret::new(v.clone().into_bytes())),
-            None => Err(ResolveError { source: source.clone(), reason: "not in stub map".into() }),
+            None => Err(ResolveError {
+                source: source.clone(),
+                reason: "not in stub map".into(),
+            }),
         }
     }
 }

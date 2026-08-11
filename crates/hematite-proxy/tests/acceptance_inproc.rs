@@ -41,26 +41,46 @@ struct Ca {
 fn make_ca() -> Ca {
     let mut params = rcgen::CertificateParams::new(Vec::new()).unwrap();
     params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    params.distinguished_name.push(rcgen::DnType::CommonName, "hematite acceptance CA");
-    params.key_usages =
-        vec![rcgen::KeyUsagePurpose::KeyCertSign, rcgen::KeyUsagePurpose::DigitalSignature];
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "hematite acceptance CA");
+    params.key_usages = vec![
+        rcgen::KeyUsagePurpose::KeyCertSign,
+        rcgen::KeyUsagePurpose::DigitalSignature,
+    ];
     let key = rcgen::KeyPair::generate().unwrap();
     let cert = params.clone().self_signed(&key).unwrap();
-    Ca { cert_pem: cert.pem(), key_pem: key.serialize_pem(), params, key }
+    Ca {
+        cert_pem: cert.pem(),
+        key_pem: key.serialize_pem(),
+        params,
+        key,
+    }
 }
 
 fn upstream_config_trusting(ca: &Ca) -> Arc<rustls::ClientConfig> {
-    let ca_der = ca.params.clone().self_signed(&ca.key).unwrap().der().clone();
+    let ca_der = ca
+        .params
+        .clone()
+        .self_signed(&ca.key)
+        .unwrap()
+        .der()
+        .clone();
     let mut roots = rustls::RootCertStore::empty();
     roots.add(ca_der).unwrap();
-    Arc::new(rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth())
+    Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    )
 }
 
 /// A TLS echo upstream for `localhost` that reflects the request's method,
 /// path, and Authorization header as a JSON body.
 async fn spawn_tls_echo(ca: &Ca) -> u16 {
     let mut leaf = rcgen::CertificateParams::new(vec!["localhost".to_string()]).unwrap();
-    leaf.distinguished_name.push(rcgen::DnType::CommonName, "localhost");
+    leaf.distinguished_name
+        .push(rcgen::DnType::CommonName, "localhost");
     leaf.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
     let ca_cert = ca.params.clone().self_signed(&ca.key).unwrap();
     let leaf_key = rcgen::KeyPair::generate().unwrap();
@@ -81,7 +101,9 @@ async fn spawn_tls_echo(ca: &Ca) -> u16 {
             let (tcp, _) = listener.accept().await.unwrap();
             let acceptor = acceptor.clone();
             tokio::spawn(async move {
-                let Ok(tls) = acceptor.accept(tcp).await else { return };
+                let Ok(tls) = acceptor.accept(tcp).await else {
+                    return;
+                };
                 let svc = service_fn(|req: hyper::Request<hyper::body::Incoming>| async move {
                     let auth = req
                         .headers()
@@ -89,7 +111,8 @@ async fn spawn_tls_echo(ca: &Ca) -> u16 {
                         .and_then(|v| v.to_str().ok())
                         .unwrap_or("")
                         .to_string();
-                    let body = serde_json::json!({ "path": req.uri().path(), "authorization": auth });
+                    let body =
+                        serde_json::json!({ "path": req.uri().path(), "authorization": auth });
                     Ok::<_, std::convert::Infallible>(hyper::Response::new(Full::new(Bytes::from(
                         serde_json::to_vec(&body).unwrap(),
                     ))))
@@ -104,7 +127,11 @@ async fn spawn_tls_echo(ca: &Ca) -> u16 {
 }
 
 /// One MITM'd request through the proxy; returns (response text, ()).
-async fn https_request(proxy_port: u16, client_cfg: Arc<rustls::ClientConfig>, req: &str) -> String {
+async fn https_request(
+    proxy_port: u16,
+    client_cfg: Arc<rustls::ClientConfig>,
+    req: &str,
+) -> String {
     let connector = TlsConnector::from(client_cfg);
     let tcp = TcpStream::connect(("127.0.0.1", proxy_port)).await.unwrap();
     let name = ServerName::try_from("localhost".to_string()).unwrap();
@@ -211,14 +238,22 @@ transforms:
         ),
     )
     .await;
-    assert!(r3.contains("Bearer sk-real-acceptance"), "upstream did not see the real secret: {r3}");
-    assert!(!r3.contains("proxy-openai-abc123"), "proxy token leaked upstream");
+    assert!(
+        r3.contains("Bearer sk-real-acceptance"),
+        "upstream did not see the real secret: {r3}"
+    );
+    assert!(
+        !r3.contains("proxy-openai-abc123"),
+        "proxy token leaked upstream"
+    );
 
     // Step 4 — require:true, token absent → 403 by secrets.
     let r4 = https_request(
         proxy_port,
         client_cfg.clone(),
-        &format!("GET /headers HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"),
+        &format!(
+            "GET /headers HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+        ),
     )
     .await;
     assert!(r4.starts_with("HTTP/1.1 403"), "step4: {r4}");
@@ -228,17 +263,37 @@ transforms:
     let records = sink.0.lock().unwrap().clone();
 
     // Step 1 record: allow with the full five-trace request list.
-    let allow = records.iter().find(|r| r.path == "/get").expect("allow record");
+    let allow = records
+        .iter()
+        .find(|r| r.path == "/get")
+        .expect("allow record");
     assert_eq!(allow.action, Action::Allow);
     assert_eq!(
-        allow.request_transforms.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
-        vec!["allowlist", "annotate", "body_capture", "secrets", "header_allowlist"],
+        allow
+            .request_transforms
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "allowlist",
+            "annotate",
+            "body_capture",
+            "secrets",
+            "header_allowlist"
+        ],
     );
     assert_eq!(allow.mode, hematite_kernel::summary::Mode::Https);
 
     // Step 3 record: swapped annotation names the source, never the value.
-    let swap = records.iter().find(|r| r.path == "/headers" && r.action == Action::Allow).unwrap();
-    let secrets_trace = swap.request_transforms.iter().find(|t| t.name == "secrets").unwrap();
+    let swap = records
+        .iter()
+        .find(|r| r.path == "/headers" && r.action == Action::Allow)
+        .unwrap();
+    let secrets_trace = swap
+        .request_transforms
+        .iter()
+        .find(|t| t.name == "secrets")
+        .unwrap();
     assert!(secrets_trace.annotations.contains_key("swapped"));
 
     // Step 4 record: rejected by secrets.
@@ -255,8 +310,14 @@ transforms:
         common::assert_valid_record(record);
     }
     let all_json = serde_json::to_string(&records).unwrap();
-    assert!(!all_json.contains("sk-real-acceptance"), "a record leaked the real secret");
-    assert!(!all_json.contains("internal-real"), "a record leaked the file secret");
+    assert!(
+        !all_json.contains("sk-real-acceptance"),
+        "a record leaked the real secret"
+    );
+    assert!(
+        !all_json.contains("internal-real"),
+        "a record leaked the file secret"
+    );
 
     std::env::remove_var("HEMATITE_ACCEPT_OPENAI");
     std::fs::remove_dir_all(&dir).ok();

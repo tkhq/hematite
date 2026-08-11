@@ -94,8 +94,14 @@ async fn sse_streams_incrementally() {
     let total = start.elapsed();
     let text = String::from_utf8_lossy(&buf);
 
-    assert!(text.contains("text/event-stream"), "content-type not forwarded: {text}");
-    assert!(text.contains("data: one") && text.contains("data: two"), "events missing: {text}");
+    assert!(
+        text.contains("text/event-stream"),
+        "content-type not forwarded: {text}"
+    );
+    assert!(
+        text.contains("data: one") && text.contains("data: two"),
+        "events missing: {text}"
+    );
     let first = first_event_at.expect("first event received");
     // The first event arrived well before the second was even sent — proof
     // the body was not buffered end-to-end.

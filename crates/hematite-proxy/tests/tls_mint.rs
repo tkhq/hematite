@@ -28,11 +28,15 @@ fn mint_leaf_for_hostname_and_ip() {
 
     let host_leaf = ca.mint("api.example.com").unwrap();
     assert_eq!(host_leaf.chain.len(), 2, "chain is [leaf, CA]");
-    host_leaf.server_config().expect("hostname leaf builds a ServerConfig");
+    host_leaf
+        .server_config()
+        .expect("hostname leaf builds a ServerConfig");
 
     let ip_leaf = ca.mint("10.0.0.5").unwrap();
     assert_eq!(ip_leaf.chain.len(), 2);
-    ip_leaf.server_config().expect("IP-literal leaf builds a ServerConfig");
+    ip_leaf
+        .server_config()
+        .expect("IP-literal leaf builds a ServerConfig");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -46,12 +50,17 @@ async fn cache_returns_same_config_and_single_flights() {
     let mut handles = Vec::new();
     for _ in 0..8 {
         let cache = cache.clone();
-        handles.push(tokio::spawn(async move { cache.get("api.example.com").await.unwrap() }));
+        handles.push(tokio::spawn(async move {
+            cache.get("api.example.com").await.unwrap()
+        }));
     }
     let configs: Vec<_> = futures_join(handles).await;
     let first = &configs[0];
     for c in &configs[1..] {
-        assert!(Arc::ptr_eq(first, c), "single-flight: one Arc for concurrent misses");
+        assert!(
+            Arc::ptr_eq(first, c),
+            "single-flight: one Arc for concurrent misses"
+        );
     }
 
     // A different hostname gets a different config.
@@ -60,7 +69,10 @@ async fn cache_returns_same_config_and_single_flights() {
 
     // A repeat hit returns the cached Arc.
     let repeat = cache.get("api.example.com").await.unwrap();
-    assert!(Arc::ptr_eq(first, &repeat), "cache hit returns the same Arc");
+    assert!(
+        Arc::ptr_eq(first, &repeat),
+        "cache hit returns the same Arc"
+    );
 }
 
 /// Minimal join without pulling in the `futures` crate.

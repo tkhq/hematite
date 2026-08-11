@@ -21,7 +21,10 @@ pub struct DnsServer {
 
 impl DnsServer {
     pub fn new(config: DnsConfig, upstream_resolver: SocketAddr) -> Self {
-        DnsServer { config: Arc::new(config), upstream_resolver }
+        DnsServer {
+            config: Arc::new(config),
+            upstream_resolver,
+        }
     }
 
     /// Produce the response bytes for a request, performing passthrough
@@ -31,12 +34,10 @@ impl DnsServer {
         match resolve(&self.config, &query) {
             Decision::Answer(answers) => Some(build_response(&query, &answers, true)),
             Decision::EmptyNoError => Some(build_empty_noerror(&query, true)),
-            Decision::Passthrough => {
-                match self.forward(request).await {
-                    Some(response) => Some(response),
-                    None => Some(build_servfail(&query)),
-                }
-            }
+            Decision::Passthrough => match self.forward(request).await {
+                Some(response) => Some(response),
+                None => Some(build_servfail(&query)),
+            },
         }
     }
 

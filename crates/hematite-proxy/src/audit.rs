@@ -55,7 +55,11 @@ pub struct PendingAudit {
 
 impl PendingAudit {
     pub fn new(sink: Arc<dyn AuditSink>, remote_addr: Option<String>) -> Self {
-        PendingAudit { sink, emitted: false, remote_addr }
+        PendingAudit {
+            sink,
+            emitted: false,
+            remote_addr,
+        }
     }
 
     pub fn emit(&mut self, record: &AuditRecord) {

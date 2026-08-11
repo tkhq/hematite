@@ -22,15 +22,24 @@ fn defaults_applied() {
     assert_eq!(config.listen.http, ":80");
     assert_eq!(config.max_request_body_bytes, 1 << 20);
     assert_eq!(config.max_response_body_bytes, 0);
-    assert_eq!(config.upstream_response_header_timeout, Duration::from_secs(30));
+    assert_eq!(
+        config.upstream_response_header_timeout,
+        Duration::from_secs(30)
+    );
     assert_eq!(config.log_level, "info");
-    assert!(config.upstream_deny_cidrs.is_none(), "absent = default deny set");
+    assert!(
+        config.upstream_deny_cidrs.is_none(),
+        "absent = default deny set"
+    );
 }
 
 #[test]
 fn env_override_applies() {
-    let env_map: HashMap<String, String> =
-        [("HEMATITE_PROXY_HTTP_LISTEN".to_string(), ":8080".to_string())].into();
+    let env_map: HashMap<String, String> = [(
+        "HEMATITE_PROXY_HTTP_LISTEN".to_string(),
+        ":8080".to_string(),
+    )]
+    .into();
     let env = move |name: &str| env_map.get(name).cloned();
     let config = load_str(MINIMAL, &env).expect("config loads");
     assert_eq!(config.listen.http, ":8080");
@@ -39,7 +48,10 @@ fn env_override_applies() {
 #[test]
 fn unknown_top_level_key_rejected() {
     let yaml = format!("{MINIMAL}\nproxyy: {{}}\n");
-    assert!(load_str(&yaml, &no_env).is_err(), "typos must not silently no-op (threat T9)");
+    assert!(
+        load_str(&yaml, &no_env).is_err(),
+        "typos must not silently no-op (threat T9)"
+    );
 }
 
 #[test]
@@ -56,26 +68,39 @@ transforms:
     config:
       headers: ["Accept"]
 "#;
-    assert!(load_str(yaml, &no_env).is_err(), "default-deny is structural (Part 04 §1)");
+    assert!(
+        load_str(yaml, &no_env).is_err(),
+        "default-deny is structural (Part 04 §1)"
+    );
 }
 
 #[test]
 fn explicit_empty_deny_cidrs_differs_from_absent() {
     let yaml = format!("{MINIMAL}\nproxy:\n  upstream_deny_cidrs: []\n");
     let config = load_str(&yaml, &no_env).expect("config loads");
-    assert_eq!(config.upstream_deny_cidrs, Some(vec![]), "explicit [] disables the guard");
+    assert_eq!(
+        config.upstream_deny_cidrs,
+        Some(vec![]),
+        "explicit [] disables the guard"
+    );
 }
 
 #[test]
 fn bare_ip_deny_cidr_rejected() {
     let yaml = format!("{MINIMAL}\nproxy:\n  upstream_deny_cidrs: [\"10.0.0.1\"]\n");
-    assert!(load_str(&yaml, &no_env).is_err(), "prefix lengths are required (Part 02 §3)");
+    assert!(
+        load_str(&yaml, &no_env).is_err(),
+        "prefix lengths are required (Part 02 §3)"
+    );
 }
 
 #[test]
 fn management_requires_api_key_env() {
     let yaml = format!("{MINIMAL}\nmanagement:\n  listen: \"127.0.0.1:9092\"\n");
-    assert!(load_str(&yaml, &no_env).is_err(), "listen set => api_key_env non-empty");
+    assert!(
+        load_str(&yaml, &no_env).is_err(),
+        "listen set => api_key_env non-empty"
+    );
 
     let env_map: HashMap<String, String> =
         [("HEMATITE_MANAGEMENT_API_KEY".to_string(), "tok".to_string())].into();

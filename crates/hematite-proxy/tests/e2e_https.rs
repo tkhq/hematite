@@ -44,19 +44,30 @@ struct Ca {
 fn make_ca(cn: &str) -> Ca {
     let mut params = rcgen::CertificateParams::new(Vec::new()).unwrap();
     params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    params.distinguished_name.push(rcgen::DnType::CommonName, cn);
-    params.key_usages =
-        vec![rcgen::KeyUsagePurpose::KeyCertSign, rcgen::KeyUsagePurpose::DigitalSignature];
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, cn);
+    params.key_usages = vec![
+        rcgen::KeyUsagePurpose::KeyCertSign,
+        rcgen::KeyUsagePurpose::DigitalSignature,
+    ];
     let key = rcgen::KeyPair::generate().unwrap();
     let cert = params.clone().self_signed(&key).unwrap();
-    Ca { cert_pem: cert.pem(), key_pem: key.serialize_pem(), params, key }
+    Ca {
+        cert_pem: cert.pem(),
+        key_pem: key.serialize_pem(),
+        params,
+        key,
+    }
 }
 
 /// A TLS echo upstream serving `name`, signed by `ca`. Returns its port.
 async fn spawn_tls_upstream(ca: &Ca, name: &str) -> u16 {
     // Leaf for `name` signed by the CA.
     let mut leaf_params = rcgen::CertificateParams::new(vec![name.to_string()]).unwrap();
-    leaf_params.distinguished_name.push(rcgen::DnType::CommonName, name);
+    leaf_params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, name);
     leaf_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
     let ca_cert = ca.params.clone().self_signed(&ca.key).unwrap();
     let leaf_key = rcgen::KeyPair::generate().unwrap();
@@ -78,7 +89,9 @@ async fn spawn_tls_upstream(ca: &Ca, name: &str) -> u16 {
             let (tcp, _) = listener.accept().await.unwrap();
             let acceptor = acceptor.clone();
             tokio::spawn(async move {
-                let Ok(tls) = acceptor.accept(tcp).await else { return };
+                let Ok(tls) = acceptor.accept(tcp).await else {
+                    return;
+                };
                 let service = service_fn(|req: hyper::Request<hyper::body::Incoming>| async move {
                     let body = format!("echo:{}", req.uri().path());
                     Ok::<_, std::convert::Infallible>(hyper::Response::new(Full::new(Bytes::from(
@@ -96,10 +109,20 @@ async fn spawn_tls_upstream(ca: &Ca, name: &str) -> u16 {
 
 /// A root store trusting `ca`, as an upstream client config.
 fn upstream_config_trusting(ca: &Ca) -> Arc<rustls::ClientConfig> {
-    let ca_der = ca.params.clone().self_signed(&ca.key).unwrap().der().clone();
+    let ca_der = ca
+        .params
+        .clone()
+        .self_signed(&ca.key)
+        .unwrap()
+        .der()
+        .clone();
     let mut roots = rustls::RootCertStore::empty();
     roots.add(ca_der).unwrap();
-    Arc::new(rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth())
+    Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    )
 }
 
 #[tokio::test(flavor = "multi_thread")]

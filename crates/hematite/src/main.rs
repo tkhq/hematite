@@ -22,7 +22,11 @@ async fn spawn_dns(dns: &DnsResolved) -> Result<(), String> {
     for (name, rtype, value) in &dns.records {
         let name = name.trim_end_matches('.').to_ascii_lowercase();
         let record = match rtype.as_str() {
-            "A" => StaticRecord::A(value.parse().map_err(|_| format!("bad A value {value:?}"))?),
+            "A" => StaticRecord::A(
+                value
+                    .parse()
+                    .map_err(|_| format!("bad A value {value:?}"))?,
+            ),
             "CNAME" => StaticRecord::Cname(value.trim_end_matches('.').to_ascii_lowercase()),
             other => return Err(format!("unsupported record type {other:?}")),
         };
@@ -33,7 +37,12 @@ async fn spawn_dns(dns: &DnsResolved) -> Result<(), String> {
         .iter()
         .map(|g| DomainGlob::parse(g).map_err(|e| e.to_string()))
         .collect::<Result<Vec<_>, _>>()?;
-    let config = DnsConfig { proxy_ip: dns.proxy_ip, passthrough, records, ttl: 60 };
+    let config = DnsConfig {
+        proxy_ip: dns.proxy_ip,
+        passthrough,
+        records,
+        ttl: 60,
+    };
     let upstream = dns
         .upstream_resolver
         .parse()
@@ -115,7 +124,11 @@ fn main() -> ExitCode {
             }
         };
         eprintln!("hematite: http listener on {}", config.listen.http);
-        tokio::spawn(hematite_proxy::http::serve_http(http, state.clone(), sink.clone()));
+        tokio::spawn(hematite_proxy::http::serve_http(
+            http,
+            state.clone(),
+            sink.clone(),
+        ));
 
         // HTTPS MITM listener (L2), served only when TLS is configured.
         if let Some(listen) = &config.listen.https {

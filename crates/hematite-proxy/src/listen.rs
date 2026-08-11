@@ -16,14 +16,20 @@ use crate::http::{serve_io, ConnCtx};
 use crate::state::SharedState;
 use crate::tunnel::{
     dispatch, parse_connect, parse_socks5_methods, parse_socks5_request, sniff_inner,
-    ClientProtocol, ConnectTarget, InnerProtocol, Socks5Method, socks5_failure, SOCKS5_SUCCESS,
+    socks5_failure, ClientProtocol, ConnectTarget, InnerProtocol, Socks5Method, SOCKS5_SUCCESS,
 };
 
 const SNIFF_CAP: usize = 16 * 1024;
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Emit a listener-level rejection record (Part 05 §6, Part 08 §2).
-fn emit_listener_reject(sink: &Arc<dyn AuditSink>, remote: &str, host: &str, status: u16, mode: Mode) {
+fn emit_listener_reject(
+    sink: &Arc<dyn AuditSink>,
+    remote: &str,
+    host: &str,
+    status: u16,
+    mode: Mode,
+) {
     let mut pending = PendingAudit::new(sink.clone(), Some(remote.to_string()));
     let mut record = AuditRecord {
         host: host.to_string(),
@@ -212,7 +218,9 @@ async fn handle_tunnel(
     if is_socks {
         stream.write_all(&SOCKS5_SUCCESS).await?;
     } else {
-        stream.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await?;
+        stream
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .await?;
     }
 
     // Inner-protocol sniffing (Part 05 §4.3): peek the first inner byte.
@@ -372,7 +380,12 @@ fn emit_tunnel_reject(
     pending.emit(&record);
 }
 
-fn emit_tunnel_handshake(sink: &Arc<dyn AuditSink>, remote: &str, target: &ConnectTarget, traces: &[Trace]) {
+fn emit_tunnel_handshake(
+    sink: &Arc<dyn AuditSink>,
+    remote: &str,
+    target: &ConnectTarget,
+    traces: &[Trace],
+) {
     let mut pending = PendingAudit::new(sink.clone(), Some(remote.to_string()));
     let mut record = base_tunnel_record(remote, target, traces);
     record.action = Action::Allow;

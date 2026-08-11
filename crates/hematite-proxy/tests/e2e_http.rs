@@ -54,9 +54,9 @@ async fn spawn_upstream() -> u16 {
                         "headers": headers,
                     }))
                     .unwrap();
-                    Ok::<_, std::convert::Infallible>(hyper::Response::new(
-                        Full::new(Bytes::from(body)),
-                    ))
+                    Ok::<_, std::convert::Infallible>(hyper::Response::new(Full::new(Bytes::from(
+                        body,
+                    ))))
                 });
                 let _ = hyper::server::conn::http1::Builder::new()
                     .serve_connection(TokioIo::new(stream), service)
@@ -77,7 +77,10 @@ fn pipeline_allowing(cidr: &str) -> hematite_kernel::pipeline::Pipeline {
     build_pipeline(&specs).unwrap().pipeline
 }
 
-async fn spawn_proxy(pipeline: hematite_kernel::pipeline::Pipeline, guard: Guard) -> (u16, Arc<TestSink>) {
+async fn spawn_proxy(
+    pipeline: hematite_kernel::pipeline::Pipeline,
+    guard: Guard,
+) -> (u16, Arc<TestSink>) {
     let runtime = Runtime {
         pipeline,
         guard,
@@ -130,7 +133,10 @@ async fn allowed_request_forwards_and_audits() {
     assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
     // Hop-by-hop (Connection, its named X-Doomed) stripped by hygiene;
     // X-Tracking stripped by header_allowlist.
-    assert!(!response.contains("x-doomed"), "connection-named header reached upstream");
+    assert!(
+        !response.contains("x-doomed"),
+        "connection-named header reached upstream"
+    );
     assert!(!response.contains("x-tracking"), "header_allowlist failed");
     assert!(response.contains("\"path\":\"/get\""));
 
@@ -185,7 +191,11 @@ async fn guard_denies_post_resolution_dial() {
     let records = sink.records();
     assert_eq!(records.len(), 1);
     let (record, level) = &records[0];
-    assert_eq!(record.action, Action::Reject, "guard denial is a policy denial, not an error");
+    assert_eq!(
+        record.action,
+        Action::Reject,
+        "guard denial is a policy denial, not an error"
+    );
     assert_eq!(record.rejected_by.as_deref(), Some("guard"));
     assert_eq!(record.status_code, Some(502));
     assert_eq!(*level, Level::Warn);
@@ -204,7 +214,10 @@ async fn dot_segments_rejected_400() {
             &format!("GET http://127.0.0.1:1{path} HTTP/1.1\r\nHost: 127.0.0.1:1\r\n\r\n"),
         )
         .await;
-        assert!(response.starts_with("HTTP/1.1 400"), "path {path}: {response}");
+        assert!(
+            response.starts_with("HTTP/1.1 400"),
+            "path {path}: {response}"
+        );
     }
 
     let records = sink.records();

@@ -10,7 +10,13 @@ use hematite_kernel::verdict::{Trace, TraceVerdict};
 use serde_json::{json, Map};
 
 fn trace(name: &str, verdict: TraceVerdict) -> Trace {
-    Trace { name: name.into(), verdict, duration_ms: 0.4, error: None, annotations: Map::new() }
+    Trace {
+        name: name.into(),
+        verdict,
+        duration_ms: 0.4,
+        error: None,
+        annotations: Map::new(),
+    }
 }
 
 fn base(action: Action) -> AuditRecord {

@@ -38,7 +38,9 @@ fn empty_body() -> OutBody {
 }
 
 fn bytes_body(bytes: Vec<u8>) -> OutBody {
-    Full::new(Bytes::from(bytes)).map_err(|e| match e {}).boxed()
+    Full::new(Bytes::from(bytes))
+        .map_err(|e| match e {})
+        .boxed()
 }
 
 /// Per-connection context: what the listener knows that the request itself
@@ -79,7 +81,9 @@ where
         .preserve_header_case(true);
     // with_upgrades so a WebSocket handshake can switch to byte copy
     // (Part 05 §5).
-    let _ = builder.serve_connection_with_upgrades(TokioIo::new(io), service).await;
+    let _ = builder
+        .serve_connection_with_upgrades(TokioIo::new(io), service)
+        .await;
 }
 
 /// Serve the plain-HTTP listener until the socket closes (Part 05 §2, L1).
@@ -111,7 +115,9 @@ fn split_host_port(s: &str) -> (String, Option<u16>) {
     if let Some(rest) = s.strip_prefix('[') {
         if let Some(end) = rest.find(']') {
             let host = rest[..end].to_ascii_lowercase();
-            let port = rest[end + 1..].strip_prefix(':').and_then(|p| p.parse().ok());
+            let port = rest[end + 1..]
+                .strip_prefix(':')
+                .and_then(|p| p.parse().ok());
             return (host, port);
         }
     }
@@ -262,13 +268,7 @@ fn extract_target(req: &Request<Incoming>, default_port: u16) -> Result<Target, 
     })
 }
 
-fn base_record(
-    ctx: &ConnCtx,
-    host: &str,
-    method: &str,
-    path: &str,
-    action: Action,
-) -> AuditRecord {
+fn base_record(ctx: &ConnCtx, host: &str, method: &str, path: &str, action: Action) -> AuditRecord {
     AuditRecord {
         host: host.to_string(),
         method: method.to_string(),
@@ -310,7 +310,10 @@ fn is_websocket(req: &Request<Incoming>) -> bool {
         .headers()
         .get(hyper::header::CONNECTION)
         .and_then(|v| v.to_str().ok())
-        .map(|v| v.split(',').any(|t| t.trim().eq_ignore_ascii_case("upgrade")))
+        .map(|v| {
+            v.split(',')
+                .any(|t| t.trim().eq_ignore_ascii_case("upgrade"))
+        })
         .unwrap_or(false);
     upgrade && connection
 }
@@ -327,7 +330,11 @@ async fn handle(
     // A WebSocket handshake takes the byte-copy path after the pipeline
     // approves it; capture the client upgrade future before decomposing.
     let is_ws = is_websocket(&req);
-    let client_upgrade = if is_ws { Some(hyper::upgrade::on(&mut req)) } else { None };
+    let client_upgrade = if is_ws {
+        Some(hyper::upgrade::on(&mut req))
+    } else {
+        None
+    };
 
     // Part 05 §1 steps 1–2. A tunnel fixes the upstream to the CONNECT
     // target; the path/query still come from the inner request-target.
@@ -357,7 +364,12 @@ async fn handle(
     let header_pairs: Vec<(String, String)> = req
         .headers()
         .iter()
-        .map(|(n, v)| (n.as_str().to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned()))
+        .map(|(n, v)| {
+            (
+                n.as_str().to_string(),
+                String::from_utf8_lossy(v.as_bytes()).into_owned(),
+            )
+        })
         .collect();
 
     // Part 01 §4 — buffer up to the cap; over-cap bodies keep the unread
@@ -383,8 +395,13 @@ async fn handle(
             Some(Err(_)) => {
                 // Client disconnect mid-request (Part 05 §6): no usable
                 // response; audit `client_cancel`.
-                let mut record =
-                    base_record(&ctx, &target.host, &method, &target.path, Action::ClientCancel);
+                let mut record = base_record(
+                    &ctx,
+                    &target.host,
+                    &method,
+                    &target.path,
+                    Action::ClientCancel,
+                );
                 record.action = Action::ClientCancel;
                 record.duration_ms = ms_since(started);
                 pending.emit(&record);
@@ -413,8 +430,11 @@ async fn handle(
     };
 
     // Part 05 §1 step 4 — run the pipeline.
-    let PipelineOutcome { outcome, request_traces, body_capture } =
-        runtime.pipeline.evaluate_request(&mut summary);
+    let PipelineOutcome {
+        outcome,
+        request_traces,
+        body_capture,
+    } = runtime.pipeline.evaluate_request(&mut summary);
 
     // A record template carrying everything the request path produced.
     let mut record = base_record(&ctx, &summary.host, &method, &summary.path, Action::Allow);
@@ -458,39 +478,35 @@ async fn handle(
         Some((h, p)) => (h.clone(), *p),
         None => (summary.host.clone(), summary.port),
     };
-    let stream = match connect_upstream(
-        proof,
-        &dial_host,
-        dial_port,
-        ctx.scheme_https,
-        &runtime,
-    )
-    .await
-    {
-        Ok(s) => s,
-        Err(DialError::Denied(denial)) => {
-            record.action = Action::Reject;
-            record.rejected_by = Some("guard".into());
-            record.status_code = Some(502);
-            record.guard = Some(denial);
-            record.duration_ms = ms_since(started);
-            pending.emit(&record);
-            return Ok(status_response(StatusCode::BAD_GATEWAY));
-        }
-        Err(DialError::Failed(message)) => {
-            record.action = Action::Error;
-            record.status_code = Some(502);
-            record.error = Some(message);
-            record.duration_ms = ms_since(started);
-            pending.emit(&record);
-            return Ok(status_response(StatusCode::BAD_GATEWAY));
-        }
-    };
+    let stream =
+        match connect_upstream(proof, &dial_host, dial_port, ctx.scheme_https, &runtime).await {
+            Ok(s) => s,
+            Err(DialError::Denied(denial)) => {
+                record.action = Action::Reject;
+                record.rejected_by = Some("guard".into());
+                record.status_code = Some(502);
+                record.guard = Some(denial);
+                record.duration_ms = ms_since(started);
+                pending.emit(&record);
+                return Ok(status_response(StatusCode::BAD_GATEWAY));
+            }
+            Err(DialError::Failed(message)) => {
+                record.action = Action::Error;
+                record.status_code = Some(502);
+                record.error = Some(message);
+                record.duration_ms = ms_since(started);
+                pending.emit(&record);
+                return Ok(status_response(StatusCode::BAD_GATEWAY));
+            }
+        };
 
     // Part 07 §3 — header hygiene. A WebSocket handshake keeps Upgrade /
     // Connection so the switch survives to the upstream (Part 05 §5).
-    let mut out_headers: Vec<(String, String)> =
-        summary.headers.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect();
+    let mut out_headers: Vec<(String, String)> = summary
+        .headers
+        .iter()
+        .map(|(n, v)| (n.to_string(), v.to_string()))
+        .collect();
     strip_hop_by_hop(&mut out_headers, is_ws);
     if !over_cap {
         // Buffered body forwards with an exact Content-Length re-derived
@@ -568,9 +584,7 @@ async fn handle(
         let upstream_upgrade = hyper::upgrade::on(&mut upstream_response);
         if let Some(client_upgrade) = client_upgrade {
             tokio::spawn(async move {
-                if let (Ok(client), Ok(upstream)) =
-                    (client_upgrade.await, upstream_upgrade.await)
-                {
+                if let (Ok(client), Ok(upstream)) = (client_upgrade.await, upstream_upgrade.await) {
                     let mut client = TokioIo::new(client);
                     let mut upstream = TokioIo::new(upstream);
                     let _ = copy_bidirectional(&mut client, &mut upstream).await;
@@ -588,7 +602,12 @@ async fn handle(
         let mut resp_headers: Vec<(String, String)> = parts
             .headers
             .iter()
-            .map(|(n, v)| (n.as_str().to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned()))
+            .map(|(n, v)| {
+                (
+                    n.as_str().to_string(),
+                    String::from_utf8_lossy(v.as_bytes()).into_owned(),
+                )
+            })
             .collect();
         strip_hop_by_hop(&mut resp_headers, true);
         parts.headers.clear();
@@ -620,7 +639,10 @@ async fn handle(
                 .headers
                 .iter()
                 .map(|(n, v)| {
-                    (n.as_str().to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned())
+                    (
+                        n.as_str().to_string(),
+                        String::from_utf8_lossy(v.as_bytes()).into_owned(),
+                    )
                 })
                 .collect();
             strip_hop_by_hop(&mut resp_headers, false);
@@ -694,7 +716,10 @@ fn ms_since(started: Instant) -> f64 {
 }
 
 fn status_response(status: StatusCode) -> Response<OutBody> {
-    Response::builder().status(status).body(empty_body()).expect("static response")
+    Response::builder()
+        .status(status)
+        .body(empty_body())
+        .expect("static response")
 }
 
 fn build_response(r: hematite_kernel::verdict::Response) -> Response<OutBody> {
@@ -702,6 +727,7 @@ fn build_response(r: hematite_kernel::verdict::Response) -> Response<OutBody> {
     for (name, value) in &r.headers {
         builder = builder.header(name.as_str(), value.as_str());
     }
-    builder.body(bytes_body(r.body)).unwrap_or_else(|_| status_response(StatusCode::BAD_GATEWAY))
+    builder
+        .body(bytes_body(r.body))
+        .unwrap_or_else(|_| status_response(StatusCode::BAD_GATEWAY))
 }
-

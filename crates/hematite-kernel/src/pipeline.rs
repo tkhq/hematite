@@ -15,11 +15,20 @@ pub struct AllowProof {
 /// The whole-request outcome of the request path.
 pub enum Outcome {
     Continue(AllowProof),
-    Reject { by: String, response: Option<Response> },
-    Stub { by: String, response: Response },
+    Reject {
+        by: String,
+        response: Option<Response>,
+    },
+    Stub {
+        by: String,
+        response: Response,
+    },
     /// A transform failed (Part 03 §3). The proxy returns 502; errors MUST
     /// NOT fail open.
-    Error { by: String, message: String },
+    Error {
+        by: String,
+        message: String,
+    },
 }
 
 /// Audit-record group filled by `body_capture` (Part 04 §5, Part 08 §2).
@@ -75,7 +84,11 @@ pub trait Transform: Send + Sync {
 
     /// Response path runs later, in the same order (Part 03 §2). All five
     /// v1 transforms are `Continue` no-ops on the response path.
-    fn on_response(&self, _ctx: &mut Ctx, _req: &RequestSummary) -> Result<Verdict, TransformError> {
+    fn on_response(
+        &self,
+        _ctx: &mut Ctx,
+        _req: &RequestSummary,
+    ) -> Result<Verdict, TransformError> {
         Ok(Verdict::Continue)
     }
 }
@@ -113,12 +126,20 @@ impl Pipeline {
             }
             match result {
                 Ok(Verdict::Continue) => {
-                    traces.push(trace(t.name(), TraceVerdict::Continue, None, ctx.annotations));
+                    traces.push(trace(
+                        t.name(),
+                        TraceVerdict::Continue,
+                        None,
+                        ctx.annotations,
+                    ));
                 }
                 Ok(Verdict::Reject(response)) => {
                     traces.push(trace(t.name(), TraceVerdict::Reject, None, ctx.annotations));
                     return PipelineOutcome {
-                        outcome: Outcome::Reject { by: t.name().to_string(), response },
+                        outcome: Outcome::Reject {
+                            by: t.name().to_string(),
+                            response,
+                        },
                         request_traces: traces,
                         body_capture,
                     };
@@ -126,7 +147,10 @@ impl Pipeline {
                 Ok(Verdict::Stub(response)) => {
                     traces.push(trace(t.name(), TraceVerdict::Stub, None, ctx.annotations));
                     return PipelineOutcome {
-                        outcome: Outcome::Stub { by: t.name().to_string(), response },
+                        outcome: Outcome::Stub {
+                            by: t.name().to_string(),
+                            response,
+                        },
                         request_traces: traces,
                         body_capture,
                     };
@@ -139,7 +163,10 @@ impl Pipeline {
                         ctx.annotations,
                     ));
                     return PipelineOutcome {
-                        outcome: Outcome::Error { by: t.name().to_string(), message },
+                        outcome: Outcome::Error {
+                            by: t.name().to_string(),
+                            message,
+                        },
                         request_traces: traces,
                         body_capture,
                     };
@@ -161,7 +188,13 @@ fn trace(
     error: Option<String>,
     annotations: Map<String, Value>,
 ) -> Trace {
-    Trace { name: name.to_string(), verdict, duration_ms: 0.0, error, annotations }
+    Trace {
+        name: name.to_string(),
+        verdict,
+        duration_ms: 0.0,
+        error,
+        annotations,
+    }
 }
 
 /// What the response path decided (Part 03 §2–§3).
@@ -170,7 +203,11 @@ pub enum ResponseAction {
     Forward,
     /// Response-path `Reject`/`Stub` replaces the upstream response with
     /// the transform-supplied one (an empty 403 for a bare `Reject`).
-    Replace { by: String, response: Response, stub: bool },
+    Replace {
+        by: String,
+        response: Response,
+        stub: bool,
+    },
     /// A response transform failed; the proxy returns 502 (fail closed).
     Error { by: String, message: String },
 }
@@ -190,7 +227,12 @@ impl Pipeline {
             let mut ctx = Ctx::default();
             match t.on_response(&mut ctx, req) {
                 Ok(Verdict::Continue) => {
-                    traces.push(trace(t.name(), TraceVerdict::Continue, None, ctx.annotations));
+                    traces.push(trace(
+                        t.name(),
+                        TraceVerdict::Continue,
+                        None,
+                        ctx.annotations,
+                    ));
                 }
                 Ok(Verdict::Reject(response)) => {
                     traces.push(trace(t.name(), TraceVerdict::Reject, None, ctx.annotations));
@@ -228,11 +270,17 @@ impl Pipeline {
                     ));
                     return ResponseOutcome {
                         traces,
-                        action: ResponseAction::Error { by: t.name().to_string(), message },
+                        action: ResponseAction::Error {
+                            by: t.name().to_string(),
+                            message,
+                        },
                     };
                 }
             }
         }
-        ResponseOutcome { traces, action: ResponseAction::Forward }
+        ResponseOutcome {
+            traces,
+            action: ResponseAction::Forward,
+        }
     }
 }

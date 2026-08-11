@@ -222,12 +222,11 @@ fn env_name(path: &str) -> String {
     format!("HEMATITE_{}", path.to_ascii_uppercase().replace('.', "_"))
 }
 
-fn apply_env_overrides(
-    value: &mut serde_yaml::Value,
-    env: &dyn Fn(&str) -> Option<String>,
-) {
+fn apply_env_overrides(value: &mut serde_yaml::Value, env: &dyn Fn(&str) -> Option<String>) {
     for path in ENV_KEYS {
-        let Some(raw) = env(&env_name(path)) else { continue };
+        let Some(raw) = env(&env_name(path)) else {
+            continue;
+        };
         let mut segments = path.split('.');
         let (section, key) = (segments.next().unwrap(), segments.next().unwrap());
 
@@ -277,30 +276,33 @@ fn yaml_to_json(v: &serde_yaml::Value) -> Result<serde_json::Value, LoadError> {
 
 /// Part 09 §2 — the full load order, with the environment injectable for
 /// tests. Returns the resolved config; `build_runtime` compiles it.
-pub fn load_str(
-    yaml: &str,
-    env: &dyn Fn(&str) -> Option<String>,
-) -> Result<Config, LoadError> {
+pub fn load_str(yaml: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Config, LoadError> {
     // 1. Parse.
-    let mut value: serde_yaml::Value = serde_yaml::from_str(yaml)
-        .map_err(|e| LoadError(format!("YAML parse error: {e}")))?;
+    let mut value: serde_yaml::Value =
+        serde_yaml::from_str(yaml).map_err(|e| LoadError(format!("YAML parse error: {e}")))?;
     if value.is_null() {
         value = serde_yaml::Value::Mapping(Default::default());
     }
     // 2. Env overrides.
     apply_env_overrides(&mut value, env);
-    let raw: RawConfig = serde_yaml::from_value(value)
-        .map_err(|e| LoadError(format!("config error: {e}")))?;
+    let raw: RawConfig =
+        serde_yaml::from_value(value).map_err(|e| LoadError(format!("config error: {e}")))?;
 
     // 3. Defaults.
     let mut warnings = Vec::new();
     let listen = ListenKeys {
-        http: raw.proxy.http_listen.clone().unwrap_or_else(|| ":80".into()),
+        http: raw
+            .proxy
+            .http_listen
+            .clone()
+            .unwrap_or_else(|| ":80".into()),
         https: raw.proxy.https_listen.clone(),
         tunnel: raw.proxy.tunnel_listen.clone(),
-        dns: raw.dns.as_ref().filter(|d| d.enabled).map(|d| {
-            d.listen.clone().unwrap_or_else(|| ":53".into())
-        }),
+        dns: raw
+            .dns
+            .as_ref()
+            .filter(|d| d.enabled)
+            .map(|d| d.listen.clone().unwrap_or_else(|| ":53".into())),
         management: raw.management.as_ref().map(|m| m.listen.clone()),
     };
     let max_request_body_bytes = raw.proxy.max_request_body_bytes.unwrap_or(1 << 20);
@@ -322,7 +324,9 @@ pub fn load_str(
     if let Some(dns) = &raw.dns {
         if dns.enabled {
             if dns.proxy_ip.is_none() {
-                return Err(LoadError("dns.proxy_ip is required when DNS is enabled".into()));
+                return Err(LoadError(
+                    "dns.proxy_ip is required when DNS is enabled".into(),
+                ));
             }
             if let Some(ip) = &dns.proxy_ip {
                 if ip.parse::<std::net::Ipv4Addr>().is_err() {
@@ -375,7 +379,10 @@ pub fn load_str(
         .transforms
         .iter()
         .map(|t| {
-            Ok(TransformSpec { name: t.name.clone(), config: yaml_to_json(&t.config)? })
+            Ok(TransformSpec {
+                name: t.name.clone(),
+                config: yaml_to_json(&t.config)?,
+            })
         })
         .collect::<Result<Vec<_>, LoadError>>()?;
     // Secret env sources are read from the proxy's environment (Part 04

@@ -14,7 +14,8 @@ fn run_case(case: &serde_json::Value) -> serde_json::Value {
     let built = match case.get("resolver") {
         Some(resolver) => {
             let resolver = MapResolver::from_value(resolver);
-            build_pipeline_with_resolver(&specs, std::sync::Arc::new(resolver)).expect("vector pipeline builds")
+            build_pipeline_with_resolver(&specs, std::sync::Arc::new(resolver))
+                .expect("vector pipeline builds")
         }
         None => build_pipeline(&specs).expect("vector pipeline builds"),
     };
@@ -22,8 +23,8 @@ fn run_case(case: &serde_json::Value) -> serde_json::Value {
         serde_json::from_value(case["summary"].clone()).expect("vector summary deserializes");
     let mut summary = summary.into_summary();
     let outcome = built.pipeline.evaluate_request(&mut summary);
-    let mut record = serde_json::to_value(conformance_record(&summary, &outcome))
-        .expect("record serializes");
+    let mut record =
+        serde_json::to_value(conformance_record(&summary, &outcome)).expect("record serializes");
     common::strip_duration_ms(&mut record);
     record
 }
