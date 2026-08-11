@@ -26,7 +26,7 @@ bad()  { echo "  FAIL: $1"; fail=1; }
 
 # Wait for the proxy's TLS listener to accept connections.
 for _ in $(seq 1 30); do
-  curl -sS --cacert "$CA" https://httpbin.org/get >/dev/null 2>&1 && break
+  code=$(curl -s -o /dev/null -w '%{http_code}' --cacert "$CA" https://httpbin.org/get 2>/dev/null); [ "$code" = 200 ] && break
   sleep 1
 done
 
