@@ -319,16 +319,8 @@ pub fn load_str(
         .unwrap_or_else(|| "info".into());
 
     // 4. Validate.
-    // L2 features are schema-checked but not served at this level.
-    if listen.https.is_some() {
-        warnings.push("https_listen is configured but TLS MITM is L2; not served".into());
-    }
-    if listen.tunnel.is_some() {
-        warnings.push("tunnel_listen is configured but the tunnel listener is L2; not served".into());
-    }
     if let Some(dns) = &raw.dns {
         if dns.enabled {
-            warnings.push("dns is enabled but the DNS server is L2; not served".into());
             if dns.proxy_ip.is_none() {
                 return Err(LoadError("dns.proxy_ip is required when DNS is enabled".into()));
             }

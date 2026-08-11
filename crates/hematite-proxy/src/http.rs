@@ -196,7 +196,8 @@ fn resolve_target(req: &Request<Incoming>, ctx: &ConnCtx) -> Result<Target, Targ
             query: uri.query().unwrap_or("").to_string(),
         });
     }
-    let target = extract_target(req)?;
+    let default_port = if ctx.scheme_https { 443 } else { 80 };
+    let target = extract_target(req, default_port)?;
     if let Some(sni) = &ctx.sni {
         // SNI == Host (ports ignored) for the origin-form HTTPS listener.
         let sni_host = split_host_port(sni).0;
@@ -210,42 +211,39 @@ fn resolve_target(req: &Request<Incoming>, ctx: &ConnCtx) -> Result<Target, Targ
     Ok(target)
 }
 
-fn extract_target(req: &Request<Incoming>) -> Result<Target, TargetError> {
+fn extract_target(req: &Request<Incoming>, default_port: u16) -> Result<Target, TargetError> {
     let uri = req.uri();
     let host_header = req
         .headers()
         .get(hyper::header::HOST)
         .and_then(|v| v.to_str().ok())
         .map(split_host_port);
+    // HTTP/2 and absolute-form both carry the authority in the URI; the
+    // `:authority` pseudo-header is the host when no `Host` header is sent.
+    let authority = uri
+        .authority()
+        .map(|a| (a.host().to_ascii_lowercase(), a.port_u16()));
 
-    let (host, port) = if let Some(authority) = uri.authority() {
-        // Absolute-form: target from the request-target, which MUST agree
-        // with the Host header (Part 05 §2); hostnames compared, ports
-        // ignored (the SNI/Host precedent, Part 05 §1).
-        let host = authority.host().to_ascii_lowercase();
-        let port = authority.port_u16().unwrap_or(80);
-        match &host_header {
-            Some((h, _)) if *h == host => {}
-            Some(_) => {
+    let (host, port) = match (authority, &host_header) {
+        // Both present: they must agree (hostnames compared, ports ignored).
+        (Some((ah, ap)), Some((hh, _))) => {
+            if ah != *hh {
                 return Err(TargetError::Bad {
-                    reason: "absolute-form target disagrees with Host header",
-                    host,
-                })
+                    reason: "request-target authority disagrees with Host header",
+                    host: ah,
+                });
             }
-            None => {
-                return Err(TargetError::Bad { reason: "missing Host header", host })
-            }
+            (ah, ap.unwrap_or(default_port))
         }
-        (host, port)
-    } else {
-        match &host_header {
-            Some((h, p)) if !h.is_empty() => (h.clone(), p.unwrap_or(80)),
-            _ => {
-                return Err(TargetError::Bad {
-                    reason: "missing or empty Host header",
-                    host: String::new(),
-                })
-            }
+        // Authority only (HTTP/2, or absolute-form without a Host header).
+        (Some((ah, ap)), None) => (ah, ap.unwrap_or(default_port)),
+        // Origin-form: host from the Host header.
+        (None, Some((hh, hp))) if !hh.is_empty() => (hh.clone(), hp.unwrap_or(default_port)),
+        _ => {
+            return Err(TargetError::Bad {
+                reason: "missing or empty Host / authority",
+                host: String::new(),
+            })
         }
     };
 

@@ -1,0 +1,82 @@
+# Acceptance configuration (Appendix A / Appendix B), adapted for the
+# docker harness: the echo upstream stands in for httpbin.org, reachable
+# from the proxy via a network alias; imds-test.local is mapped to a cloud
+# metadata address via extra_hosts to exercise the guard.
+dns:
+  enabled: true
+  listen: ":53"
+  proxy_ip: "172.31.250.2"
+  passthrough:
+    - "*.internal.corp"
+  records:
+    - name: "db.internal.corp"   # inside the passthrough zone: static wins
+      type: A
+      value: "10.0.0.9"
+
+proxy:
+  http_listen: ":80"
+  https_listen: ":443"
+  tunnel_listen: ":8080"
+  max_request_body_bytes: 1048576
+  # upstream_deny_cidrs omitted → default metadata + loopback set
+
+tls:
+  ca_cert: "/etc/hematite/certs/ca.crt"
+  ca_key: "/etc/hematite/certs/ca.key"
+
+transforms:
+  - name: allowlist
+    config:
+      domains:
+        - "httpbin.org"
+        - "imds-test.local"
+
+  - name: annotate
+    config:
+      annotations:
+        - rules:
+            - host: "httpbin.org"
+          headers: ["x-request-id"]
+
+  - name: body_capture
+    config:
+      max_request_body_bytes: 16384
+      rules:
+        - host: "httpbin.org"
+          methods: ["POST"]
+          paths: ["/anything*"]
+
+  - name: secrets
+    config:
+      secrets:
+        - source: { type: env, var: OPENAI_API_KEY }
+          proxy_value: "proxy-openai-abc123"
+          match_headers: ["Authorization"]
+          require: true
+          rules:
+            - host: "httpbin.org"
+              paths: ["/headers"]
+        - source: { type: file, path: "/run/secrets/internal-token" }
+          proxy_value: "proxy-internal-tok"
+          match_headers: []
+          rules:
+            - host: "httpbin.org"
+
+  - name: header_allowlist
+    config:
+      headers:
+        - "Authorization"
+        - "Accept"
+        - "Host"
+        - "User-Agent"
+        - "Content-Type"
+        - "/^x-request-.*$/"
+      rules:
+        - host: "httpbin.org"
+
+management:
+  listen: "0.0.0.0:9092"
+  api_key_env: "HEMATITE_MANAGEMENT_API_KEY"
+
+log:
+  level: "info"

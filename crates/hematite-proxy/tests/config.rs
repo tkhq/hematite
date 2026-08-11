@@ -91,7 +91,7 @@ fn dns_enabled_requires_proxy_ip() {
 
     let yaml = format!("{MINIMAL}\ndns:\n  enabled: true\n  proxy_ip: \"172.20.0.2\"\n");
     let config = load_str(&yaml, &no_env).expect("config loads");
-    assert!(config.warnings.iter().any(|w| w.contains("L2")), "dns warned as L2-only");
+    assert!(config.dns.is_some(), "dns settings resolved");
 }
 
 #[test]

@@ -1,0 +1,43 @@
+# Appendix A acceptance harness: hematite, an echo upstream standing in for
+# httpbin.org, and a client whose DNS points at the proxy.
+services:
+  hematite:
+    build:
+      context: ../..
+      dockerfile: tests/acceptance/Dockerfile
+    networks:
+      - accept
+    # imds-test.local is allowlisted but resolves to a metadata address, so
+    # the guard denies the dial (threat T2 / step 8).
+    extra_hosts:
+      - "imds-test.local:169.254.169.254"
+    cap_add:
+      - NET_BIND_SERVICE
+
+  echo:
+    image: python:3.12-slim
+    volumes:
+      - ./echo.py:/echo.py:ro
+      - ./certs:/certs:ro
+    command: ["python3", "/echo.py"]
+    networks:
+      accept:
+        aliases:
+          # The proxy's own resolver reaches the upstream by this name.
+          - httpbin.org
+
+  client:
+    build:
+      context: .
+      dockerfile: client.Dockerfile
+    depends_on:
+      - hematite
+      - echo
+    volumes:
+      - ./certs:/certs:ro
+      - ./run.sh:/run.sh:ro
+    networks:
+      - accept
+
+networks:
+  accept:
