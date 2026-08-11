@@ -10,6 +10,8 @@ use crate::matcher::{
     Cidr, DomainGlob, HeaderNameEntry, HostClause, MatchConfigError, PathGlob, Rule,
 };
 use crate::pipeline::{Pipeline, Transform};
+use crate::secret::{SecretResolver, SourceKind, SourceRef};
+use crate::secrets::{SecretSpec, Secrets};
 use crate::transforms::{Allowlist, Annotate, AnnotateGroup, BodyCaptureTransform, HeaderAllowlist};
 
 #[derive(Debug)]
@@ -123,7 +125,107 @@ fn deser<T: serde::de::DeserializeOwned>(name: &str, config: &Value) -> Result<T
         .map_err(|e| ConfigError(format!("transform {name:?}: {e}")))
 }
 
-fn build_transform(spec: &TransformSpec) -> Result<Box<dyn Transform>, ConfigError> {
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SecretsConfig {
+    secrets: Vec<SecretEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SecretEntry {
+    source: SourceSpec,
+    proxy_value: String,
+    #[serde(default)]
+    match_headers: Option<Vec<String>>,
+    #[serde(default)]
+    match_query: bool,
+    #[serde(default)]
+    match_path: bool,
+    #[serde(default)]
+    match_body: bool,
+    #[serde(default)]
+    require: bool,
+    rules: Vec<RuleSpec>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, tag = "type", rename_all = "lowercase")]
+enum SourceSpec {
+    Env {
+        var: String,
+        #[serde(default)]
+        json_key: Option<String>,
+    },
+    File {
+        path: String,
+        // Accepted and validated as part of the schema; TTL-based refresh
+        // is a runtime concern layered above build-time resolution and is
+        // not yet consumed by the kernel (see resolver.rs).
+        #[serde(default)]
+        #[allow(dead_code)]
+        ttl: Option<String>,
+        #[serde(default)]
+        #[allow(dead_code)]
+        failure_ttl: Option<String>,
+        #[serde(default)]
+        json_key: Option<String>,
+    },
+}
+
+impl SourceSpec {
+    fn into_ref(self) -> SourceRef {
+        match self {
+            SourceSpec::Env { var, json_key } => {
+                SourceRef { kind: SourceKind::Env { var }, json_key }
+            }
+            SourceSpec::File { path, json_key, .. } => {
+                SourceRef { kind: SourceKind::File { path }, json_key }
+            }
+        }
+    }
+}
+
+fn build_secret_spec(entry: &SecretEntry) -> Result<SecretSpec, ConfigError> {
+    // `match_headers: []`/absent = scan all; a populated list compiles as
+    // header-name entries (regex allowed, Part 02 §5).
+    let match_headers = match &entry.match_headers {
+        None => None,
+        Some(list) if list.is_empty() => None,
+        Some(list) => Some(
+            list.iter()
+                .map(|h| HeaderNameEntry::parse(h, true))
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+    };
+    // Part 04 §3.2: match_path requires an unreserved-only proxy_value so
+    // the raw-path scan cannot miss an encoded token.
+    if entry.match_path
+        && !entry
+            .proxy_value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~'))
+    {
+        return Err(ConfigError(
+            "secrets: proxy_value must be RFC 3986 unreserved-only when match_path is set".into(),
+        ));
+    }
+    Ok(SecretSpec {
+        source: entry.source.clone().into_ref(),
+        proxy_value: entry.proxy_value.clone(),
+        match_headers,
+        match_query: entry.match_query,
+        match_path: entry.match_path,
+        match_body: entry.match_body,
+        require: entry.require,
+        rules: compile_rules(&entry.rules)?,
+    })
+}
+
+fn build_transform(
+    spec: &TransformSpec,
+    resolver: Option<&dyn SecretResolver>,
+) -> Result<Box<dyn Transform>, ConfigError> {
     match spec.name.as_str() {
         "allowlist" => {
             let c: AllowlistConfig = deser("allowlist", &spec.config)?;
@@ -182,9 +284,25 @@ fn build_transform(spec: &TransformSpec) -> Result<Box<dyn Transform>, ConfigErr
                 rules: compile_rules(&c.rules)?,
             }))
         }
-        "secrets" => Err(ConfigError(
-            "the `secrets` transform (Part 04 §3) is L3 and not implemented at this level".into(),
-        )),
+        "secrets" => {
+            let resolver = resolver.ok_or_else(|| {
+                ConfigError(
+                    "the `secrets` transform is L3; build with a SecretResolver \
+                     (build_pipeline_with_resolver)"
+                        .into(),
+                )
+            })?;
+            let c: SecretsConfig = deser("secrets", &spec.config)?;
+            if c.secrets.is_empty() {
+                return Err(ConfigError("secrets: at least one secret required".into()));
+            }
+            let specs = c
+                .secrets
+                .iter()
+                .map(build_secret_spec)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Box::new(Secrets::build(specs, resolver)))
+        }
         other => Err(ConfigError(format!(
             "unknown transform {other:?}: the v1 registry is closed (Part 03 §5)"
         ))),
@@ -192,8 +310,26 @@ fn build_transform(spec: &TransformSpec) -> Result<Box<dyn Transform>, ConfigErr
 }
 
 /// Build the pipeline from the `transforms:` list, in file order
-/// (Part 03 §1: order is semantic; the kernel never reorders).
+/// (Part 03 §1: order is semantic; the kernel never reorders). L0 entry:
+/// a `secrets` transform fails without a resolver. Use
+/// `build_pipeline_with_resolver` for L3.
 pub fn build_pipeline(specs: &[TransformSpec]) -> Result<BuiltPipeline, ConfigError> {
+    build_pipeline_inner(specs, None)
+}
+
+/// L3 entry: resolves `secrets` sources through `resolver` at build time
+/// (Part 01 §5, Part 04 §3).
+pub fn build_pipeline_with_resolver(
+    specs: &[TransformSpec],
+    resolver: &dyn SecretResolver,
+) -> Result<BuiltPipeline, ConfigError> {
+    build_pipeline_inner(specs, Some(resolver))
+}
+
+fn build_pipeline_inner(
+    specs: &[TransformSpec],
+    resolver: Option<&dyn SecretResolver>,
+) -> Result<BuiltPipeline, ConfigError> {
     let allowlist_pos = specs.iter().position(|s| s.name == "allowlist");
     // Part 04 §1: default-deny is structural — a config with no allowlist
     // fails validation.
@@ -207,7 +343,35 @@ pub fn build_pipeline(specs: &[TransformSpec]) -> Result<BuiltPipeline, ConfigEr
     if allowlist_pos != Some(0) {
         warnings.push("allowlist is present but not first in the pipeline (Part 04 §1)".into());
     }
+    // Part 04 §6: body_capture must precede a body-matching secrets entry.
+    body_capture_ordering_lint(specs, &mut warnings);
 
-    let transforms = specs.iter().map(build_transform).collect::<Result<Vec<_>, _>>()?;
+    let transforms = specs
+        .iter()
+        .map(|s| build_transform(s, resolver))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(BuiltPipeline { pipeline: Pipeline::new(transforms), warnings })
+}
+
+/// Warn when `body_capture` follows a `secrets` entry with
+/// `match_body: true` (Part 04 §6, 09 §3).
+fn body_capture_ordering_lint(specs: &[TransformSpec], warnings: &mut Vec<String>) {
+    let body_matching_secrets = specs.iter().position(|s| {
+        s.name == "secrets"
+            && s.config
+                .get("secrets")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().any(|e| e.get("match_body").and_then(|b| b.as_bool()) == Some(true)))
+                .unwrap_or(false)
+    });
+    let body_capture_pos = specs.iter().position(|s| s.name == "body_capture");
+    if let (Some(secrets_i), Some(capture_i)) = (body_matching_secrets, body_capture_pos) {
+        if capture_i > secrets_i {
+            warnings.push(
+                "body_capture follows a secrets entry with match_body: true; \
+                 the log will hold real credentials (Part 04 §6)"
+                    .into(),
+            );
+        }
+    }
 }

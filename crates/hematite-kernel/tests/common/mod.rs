@@ -6,9 +6,12 @@
 
 use std::path::PathBuf;
 
+use std::collections::{HashMap, HashSet};
+
 use serde::Deserialize;
 use serde_json::Value;
 
+use hematite_kernel::secret::{ResolveError, Secret, SecretResolver, SourceRef};
 use hematite_kernel::summary::{Body, Headers, Mode, RequestSummary};
 
 pub fn load_vector(file: &str) -> Value {
@@ -49,6 +52,51 @@ impl VectorSummary {
             body: Body::new(self.body.into_bytes(), false),
             sni: self.sni,
             remote_addr: None,
+        }
+    }
+}
+
+/// A stub resolver built from a vector's `resolver` map: source name →
+/// resolved value. Names in `failing` resolve to an error (Appendix C §2
+/// case 8, `resolver_fails`).
+pub struct MapResolver {
+    map: HashMap<String, String>,
+    failing: HashSet<String>,
+}
+
+impl MapResolver {
+    pub fn new(map: HashMap<String, String>, failing: HashSet<String>) -> Self {
+        MapResolver { map, failing }
+    }
+
+    /// From a vector `{ "NAME": "value", ... }` object.
+    pub fn from_value(value: &Value) -> Self {
+        let map = value
+            .as_object()
+            .map(|o| {
+                o.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        MapResolver { map, failing: HashSet::new() }
+    }
+
+    pub fn with_failing(mut self, name: &str) -> Self {
+        self.failing.insert(name.to_string());
+        self
+    }
+}
+
+impl SecretResolver for MapResolver {
+    fn resolve(&self, source: &SourceRef) -> Result<Secret, ResolveError> {
+        let name = source.name();
+        if self.failing.contains(name) {
+            return Err(ResolveError { source: source.clone(), reason: "stubbed failure".into() });
+        }
+        match self.map.get(name) {
+            Some(v) => Ok(Secret::new(v.clone().into_bytes())),
+            None => Err(ResolveError { source: source.clone(), reason: "not in stub map".into() }),
         }
     }
 }

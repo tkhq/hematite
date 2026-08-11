@@ -4,12 +4,20 @@
 mod common;
 
 use hematite_kernel::audit::conformance_record;
-use hematite_kernel::config::{build_pipeline, TransformSpec};
+use hematite_kernel::config::{build_pipeline, build_pipeline_with_resolver, TransformSpec};
+
+use common::MapResolver;
 
 fn run_case(case: &serde_json::Value) -> serde_json::Value {
     let specs: Vec<TransformSpec> =
         serde_json::from_value(case["pipeline"].clone()).expect("vector pipeline deserializes");
-    let built = build_pipeline(&specs).expect("vector pipeline builds");
+    let built = match case.get("resolver") {
+        Some(resolver) => {
+            let resolver = MapResolver::from_value(resolver);
+            build_pipeline_with_resolver(&specs, &resolver).expect("vector pipeline builds")
+        }
+        None => build_pipeline(&specs).expect("vector pipeline builds"),
+    };
     let summary: common::VectorSummary =
         serde_json::from_value(case["summary"].clone()).expect("vector summary deserializes");
     let mut summary = summary.into_summary();
@@ -33,10 +41,7 @@ fn reject_l0() {
     );
 }
 
-// Red oracle for Phase 5 (Part 04 §3, L3): the `secrets` transform is not
-// implemented yet, so this vector is expected to fail if un-ignored.
 #[test]
-#[ignore = "L3 — requires the secrets transform (Phase 5)"]
 fn full_pipeline_l3() {
     let vectors = common::load_vector("decision-traces.json");
     let case = &vectors["full_pipeline_l3"];

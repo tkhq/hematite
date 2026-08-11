@@ -12,8 +12,9 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use hematite_kernel::config::{build_pipeline, ConfigError, TransformSpec};
+use hematite_kernel::config::{build_pipeline_with_resolver, ConfigError, TransformSpec};
 
+use crate::resolver::EnvFileResolver;
 use crate::state::{Guard, Runtime};
 
 /// Raw YAML shape. Unknown keys fail parsing at every level (threat T9:
@@ -360,7 +361,10 @@ pub fn load_str(
             Ok(TransformSpec { name: t.name.clone(), config: yaml_to_json(&t.config)? })
         })
         .collect::<Result<Vec<_>, LoadError>>()?;
-    let built = build_pipeline(&transforms)?;
+    // Secret env sources are read from the proxy's environment (Part 04
+    // §3.1); file sources are read from disk. Both resolve here so config
+    // errors surface at load, not at request time.
+    let built = build_pipeline_with_resolver(&transforms, &EnvFileResolver)?;
     warnings.extend(built.warnings);
 
     Ok(Config {
@@ -378,7 +382,7 @@ pub fn load_str(
 
 /// Compile a loaded config into a runnable `Runtime`.
 pub fn build_runtime(config: &Config) -> Result<Runtime, LoadError> {
-    let pipeline = build_pipeline(&config.transforms)?.pipeline;
+    let pipeline = build_pipeline_with_resolver(&config.transforms, &EnvFileResolver)?.pipeline;
     let guard = match &config.upstream_deny_cidrs {
         None => Guard::default_set(),
         Some(cidrs) => Guard::new(cidrs).map_err(LoadError)?,

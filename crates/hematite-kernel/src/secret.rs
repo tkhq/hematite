@@ -31,12 +31,31 @@ impl fmt::Debug for Secret {
     }
 }
 
-/// Names a secret source: an env var name or a file path. This is the only
-/// form in which a secret is ever referred to in traces, errors, or audit
-/// records (Part 04 §3.4).
+/// Where a secret comes from (Part 04 §3.1). The `name` — env var or file
+/// path — is the only form in which a secret is ever referred to in traces,
+/// errors, or audit records (Part 04 §3.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceKind {
+    Env { var: String },
+    File { path: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceRef {
-    pub name: String,
+    pub kind: SourceKind,
+    /// Optional: parse the resolved value as JSON and take this top-level
+    /// string field (Part 04 §3.1).
+    pub json_key: Option<String>,
+}
+
+impl SourceRef {
+    /// The audit-safe name of the source.
+    pub fn name(&self) -> &str {
+        match &self.kind {
+            SourceKind::Env { var } => var,
+            SourceKind::File { path } => path,
+        }
+    }
 }
 
 /// A resolution failure. Carries the source name and a reason — never the
@@ -49,7 +68,7 @@ pub struct ResolveError {
 
 impl fmt::Display for ResolveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "secret source {:?} failed to resolve: {}", self.source.name, self.reason)
+        write!(f, "secret source {:?} failed to resolve: {}", self.source.name(), self.reason)
     }
 }
 

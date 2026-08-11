@@ -9,10 +9,12 @@
 #![forbid(unsafe_code)]
 
 pub mod audit;
+pub mod codec;
 pub mod config;
 pub mod matcher;
 pub mod pipeline;
 pub mod secret;
+pub mod secrets;
 pub mod summary;
 pub mod transforms;
 pub mod verdict;

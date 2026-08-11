@@ -12,4 +12,5 @@ pub mod dial;
 pub mod hop;
 pub mod http;
 pub mod management;
+pub mod resolver;
 pub mod state;
