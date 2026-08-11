@@ -12,10 +12,40 @@ that cannot be logged, a dialer that cannot run without a policy verdict) and
 by executable test vectors — not by review discipline.
 
 - Concept note (Phase 1): [`CONCEPT.md`](CONCEPT.md)
-- Specification (Phase 2 draft): [`spec/`](spec/README.md)
+- Specification (Phase 2): [`spec/`](spec/README.md)
 - Heritage: a from-first-principles redesign of the product category defined
   by [iron-proxy](https://github.com/paradigmxyz/iron-proxy) (Go). Behavioral
   compatibility is a non-goal.
 
-Status: spec v0.1 drafted; implementation not started. Next milestones are in
+## Workspace
+
+Each crate is a conformance-level boundary (spec Appendix E):
+
+| Crate | Level | Scope |
+|-------|-------|-------|
+| [`hematite-kernel`](crates/hematite-kernel) | L0/L3 | pure policy kernel — decision model, matching, pipeline, transforms, secret custody |
+| [`hematite-proxy`](crates/hematite-proxy) | L1/L2 | listeners (HTTP, HTTPS MITM, tunnel), guard, upstream TLS, audit, config/reload |
+| [`hematite-dns`](crates/hematite-dns) | L2 | DNS interception server |
+| [`hematite`](crates/hematite) | — | the binary |
+
+## Build and run
+
+```sh
+cargo test --workspace          # unit + conformance vectors + integration
+cargo run -p hematite -- -config hematite.yaml
+
+# Container image (also published to ghcr.io on push to main):
+docker build -t hematite .
+```
+
+The end-to-end acceptance test (spec Appendix A) runs under
+[`tests/acceptance`](tests/acceptance):
+
+```sh
+cd tests/acceptance && ./gen-certs.sh
+docker compose up --abort-on-container-exit --exit-code-from client
+```
+
+Status: spec v0.1 and a full v1 implementation (L0–L3) — all conformance
+vectors, the acceptance test, and the container harness pass. Milestones in
 `spec/README.md` §Status.
