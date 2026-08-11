@@ -20,7 +20,7 @@ chart is the artifact valet (or any consumer) will install.
 | Decision | Choice |
 |---|---|
 | Topology | Shared egress service: one Deployment + Service per namespace. No sidecar mode. |
-| CA handling | `tls.existingSecret` for real deployments; `tls.generate: true` mints a throwaway CA with Helm `genCA` for dev/CI. |
+| CA handling | `tls.existingSecret` always; a `hack/gen-ca.sh` helper mints a throwaway CA and creates the Secret for dev/CI. (Helm `genCA` was dropped during planning: sprig emits RSA PKCS#1 or SEC1 EC keys, and hematite's rcgen 0.13 `KeyPair::from_pem` parses PKCS#8 only.) |
 | Config surface | Raw passthrough: `values.config` is literal hematite.yaml (spec Part 09 stays the single schema source). |
 | Enforcement | Optional NetworkPolicy template, off by default. |
 | Test harness | k3d + bash/helm orchestrator script; identical locally and in CI. |
@@ -80,11 +80,15 @@ after YAML parse, per Part 09):
 - `values.tls.existingSecret`: name of a Secret with keys `ca.crt` and
   `ca.key` (PKCS#8 ECDSA P-256 per spec), mounted read-only at
   `/etc/hematite/tls`.
-- `values.tls.generate: true`: chart creates the Secret itself using
-  Helm `genCA`, guarded with `lookup` so an upgrade reuses the existing
-  Secret instead of re-minting (clients that trusted the old CA keep
-  working). Dev/CI convenience only; documented as such.
-- Setting both is a values validation error (`fail` in the template).
+- Dev/CI convenience: `deploy/chart/hematite/hack/gen-ca.sh <secret-name>`
+  mints a throwaway CA with openssl (PKCS#8 ECDSA P-256, the format
+  hematite requires) and creates the Secret. In-chart generation via
+  Helm `genCA` was rejected: sprig produces RSA PKCS#1 or SEC1 EC keys,
+  which rcgen 0.13 (`KeyPair::from_pem`, PKCS#8-only) cannot load.
+- Upstream-dial trust for private upstreams: hematite's dialer verifies
+  against system roots via rustls-native-certs, which honors
+  `SSL_CERT_FILE`; the chart's `values.env` passthrough covers this
+  (the k3s test uses it to trust the echo upstream's leaf).
 
 ### Optional NetworkPolicy (`values.egressLockdown`)
 
@@ -98,11 +102,14 @@ after YAML parse, per Part 09):
   Stock k3s enforces via its embedded kube-router policy controller;
   clusters whose CNI ignores NetworkPolicy get silent non-enforcement.
 
-### hostAliases
+### Pod-spec passthroughs
 
-`values.hostAliases` passes through to the pod spec. Needed by the test
-(and useful generally) to steer hematite's own upstream dialing without
-external DNS.
+`values.hostAliases`, `values.env`, `values.extraVolumes`, and
+`values.extraVolumeMounts` pass through to the pod spec. The test needs
+all four: hostAliases to steer hematite's own upstream dialing without
+external DNS, env for `OPENAI_API_KEY`/`SSL_CERT_FILE`, and the volume
+passthroughs to mount the file-source secret at
+`/run/secrets/internal-token`.
 
 ## Acceptance script parameterization
 
@@ -148,7 +155,11 @@ Files:
 
 ### Test values (`tests/k3s/values.yaml`)
 
-- All listeners enabled; `tls.generate: true`.
+- All listeners enabled; `tls.existingSecret` pointing at a Secret the
+  orchestrator creates from an openssl-generated CA (which also signs
+  the echo upstream's leaf, mirroring compose's single-CA trust model;
+  `SSL_CERT_FILE=/etc/hematite/tls/ca.crt` via `values.env` makes the
+  dialer trust it).
 - `service.dns.enabled: true` with a pinned `service.clusterIP` from
   k3d's default service CIDR (10.43.0.0/16).
 - `values.config` inlines the same transform pipeline as
