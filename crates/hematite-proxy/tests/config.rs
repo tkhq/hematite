@@ -125,6 +125,59 @@ fn tls_required_when_https_listener_enabled() {
     assert!(load_str(&yaml, &no_env).is_err());
 }
 
+/// YAML snippet shared by observability tests — has a valid allowlist transform.
+const OBS_BASE: &str = "proxy:\n  http_listen: \":80\"\ntransforms:\n  - name: allowlist\n    config:\n      domains: [\"api.example.com\"]\n";
+
+#[test]
+fn observability_defaults_when_absent() {
+    let c = load_str(OBS_BASE, &|_| None).unwrap();
+    assert!(c.observability.metrics.enabled);
+    assert_eq!(c.observability.log.format, "json");
+    assert!(!c.observability.otlp.enabled);
+    assert!((c.observability.otlp.sample_ratio - 1.0).abs() < f64::EPSILON);
+    assert_eq!(c.observability.otlp.service_name, "hematite");
+}
+
+#[test]
+fn otlp_enabled_requires_endpoint() {
+    let yaml = format!("{OBS_BASE}observability:\n  otlp:\n    enabled: true\n");
+    assert!(load_str(&yaml, &|_| None).is_err());
+}
+
+#[test]
+fn otlp_sample_ratio_range_validated() {
+    let yaml = format!(
+        "{OBS_BASE}observability:\n  otlp:\n    enabled: true\n    endpoint: \"http://c:4318\"\n    sample_ratio: 1.5\n"
+    );
+    assert!(load_str(&yaml, &|_| None).is_err());
+}
+
+#[test]
+fn log_format_validated() {
+    let yaml = format!("{OBS_BASE}observability:\n  log:\n    format: \"xml\"\n");
+    assert!(load_str(&yaml, &|_| None).is_err());
+}
+
+#[test]
+fn three_segment_env_override() {
+    let env = |k: &str| {
+        (k == "HEMATITE_OBSERVABILITY_OTLP_ENDPOINT").then(|| "http://collector:4318".to_string())
+    };
+    let yaml = format!("{OBS_BASE}observability:\n  otlp:\n    enabled: true\n");
+    let c = load_str(&yaml, &env).unwrap();
+    assert_eq!(
+        c.observability.otlp.endpoint.as_deref(),
+        Some("http://collector:4318")
+    );
+}
+
+#[test]
+fn two_segment_env_override_still_works() {
+    let env = |k: &str| (k == "HEMATITE_LOG_LEVEL").then(|| "debug".to_string());
+    let c = load_str(OBS_BASE, &env).unwrap();
+    assert_eq!(c.log_level, "debug");
+}
+
 #[test]
 fn ordering_lint_surfaces_as_warning() {
     let yaml = r#"

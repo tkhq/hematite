@@ -37,6 +37,64 @@ pub struct RawConfig {
     pub management: Option<ManagementSection>,
     #[serde(default)]
     pub log: Option<LogSection>,
+    #[serde(default)]
+    pub observability: ObservabilitySection,
+}
+
+// ── Observability section ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ObservabilitySection {
+    pub metrics: MetricsSection,
+    pub log: ObsLogSection,
+    pub otlp: OtlpSection,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct MetricsSection {
+    pub enabled: bool,
+}
+
+impl Default for MetricsSection {
+    fn default() -> Self {
+        MetricsSection { enabled: true }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ObsLogSection {
+    pub format: String,
+}
+
+impl Default for ObsLogSection {
+    fn default() -> Self {
+        ObsLogSection {
+            format: "json".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct OtlpSection {
+    pub enabled: bool,
+    pub endpoint: Option<String>,
+    pub sample_ratio: f64,
+    pub service_name: String,
+}
+
+impl Default for OtlpSection {
+    fn default() -> Self {
+        OtlpSection {
+            enabled: false,
+            endpoint: None,
+            sample_ratio: 1.0,
+            service_name: "hematite".to_string(),
+        }
+    }
 }
 
 /// `transforms:` entries arrive as YAML; the kernel builder takes JSON
@@ -181,6 +239,7 @@ pub struct Config {
     pub dns: Option<DnsResolved>,
     pub transforms: Vec<TransformSpec>,
     pub warnings: Vec<String>,
+    pub observability: ObservabilitySection,
 }
 
 /// Resolved DNS server settings (Part 06 §1).
@@ -216,6 +275,12 @@ const ENV_KEYS: &[&str] = &[
     "management.listen",
     "management.api_key_env",
     "log.level",
+    "observability.metrics.enabled",
+    "observability.log.format",
+    "observability.otlp.enabled",
+    "observability.otlp.endpoint",
+    "observability.otlp.sample_ratio",
+    "observability.otlp.service_name",
 ];
 
 fn env_name(path: &str) -> String {
@@ -227,28 +292,37 @@ fn apply_env_overrides(value: &mut serde_yaml::Value, env: &dyn Fn(&str) -> Opti
         let Some(raw) = env(&env_name(path)) else {
             continue;
         };
-        let mut segments = path.split('.');
-        let (section, key) = (segments.next().unwrap(), segments.next().unwrap());
 
-        let root = match value {
+        let segments: Vec<&str> = path.split('.').collect();
+        let (parents, leaf) = segments.split_at(segments.len() - 1);
+
+        // Walk/create intermediate mapping nodes.
+        let mut current = match value {
             serde_yaml::Value::Mapping(m) => m,
             _ => return,
         };
-        let section_value = root
-            .entry(serde_yaml::Value::String(section.to_string()))
-            .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
-        if let serde_yaml::Value::Mapping(section_map) = section_value {
-            // Scalars keep their YAML types: try bool, then integer,
-            // then string.
-            let typed = if let Ok(b) = raw.parse::<bool>() {
-                serde_yaml::Value::Bool(b)
-            } else if let Ok(n) = raw.parse::<u64>() {
-                serde_yaml::Value::Number(n.into())
-            } else {
-                serde_yaml::Value::String(raw)
-            };
-            section_map.insert(serde_yaml::Value::String(key.to_string()), typed);
+        for seg in parents {
+            let entry = current
+                .entry(serde_yaml::Value::String((*seg).to_string()))
+                .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
+            match entry {
+                serde_yaml::Value::Mapping(m) => current = m,
+                _ => return, // unexpected non-mapping; skip
+            }
         }
+
+        // Scalars keep their YAML types: try bool, then integer,
+        // then float, then string.
+        let typed = if let Ok(b) = raw.parse::<bool>() {
+            serde_yaml::Value::Bool(b)
+        } else if let Ok(n) = raw.parse::<u64>() {
+            serde_yaml::Value::Number(n.into())
+        } else if let Ok(f) = raw.parse::<f64>() {
+            serde_yaml::Value::Number(serde_yaml::Number::from(f))
+        } else {
+            serde_yaml::Value::String(raw)
+        };
+        current.insert(serde_yaml::Value::String(leaf[0].to_string()), typed);
     }
 }
 
@@ -354,6 +428,26 @@ pub fn load_str(yaml: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Conf
         Guard::new(cidrs).map_err(LoadError)?;
     }
 
+    // Observability validation.
+    {
+        let obs = &raw.observability;
+        if obs.otlp.enabled && obs.otlp.endpoint.is_none() {
+            return Err(LoadError(
+                "observability.otlp.endpoint is required when observability.otlp.enabled".into(),
+            ));
+        }
+        if !(0.0..=1.0).contains(&obs.otlp.sample_ratio) {
+            return Err(LoadError(
+                "observability.otlp.sample_ratio must be within 0.0..=1.0".into(),
+            ));
+        }
+        if obs.log.format != "json" && obs.log.format != "text" {
+            return Err(LoadError(
+                "observability.log.format must be \"json\" or \"text\"".into(),
+            ));
+        }
+    }
+
     // Management: listen set ⇒ api_key_env names a non-empty env var.
     let management_api_key = match &raw.management {
         None => None,
@@ -436,6 +530,7 @@ pub fn load_str(yaml: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Conf
         dns,
         transforms,
         warnings,
+        observability: raw.observability,
     })
 }
 
