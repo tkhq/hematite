@@ -113,7 +113,7 @@ fn main() -> ExitCode {
 
     // Install the global tracing subscriber now that we have the config.
     // Pre-config-load errors above go to bare stderr by necessity.
-    let _guard = telemetry::init_telemetry(
+    let guard = telemetry::init_telemetry(
         &config.observability.log.format,
         &config.log_level,
         &config.observability.otlp,
@@ -235,6 +235,7 @@ fn main() -> ExitCode {
 
         let _ = tokio::signal::ctrl_c().await;
         tracing::info!("shutting down");
+        guard.shutdown();
         ExitCode::SUCCESS
     })
 }

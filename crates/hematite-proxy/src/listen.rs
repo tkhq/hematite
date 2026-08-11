@@ -10,6 +10,7 @@ use hematite_kernel::verdict::Trace;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::LazyConfigAcceptor;
+use tracing::Instrument as _;
 
 use crate::audit::{AuditSink, PendingAudit};
 use crate::http::{serve_io, ConnCtx};
@@ -117,7 +118,8 @@ async fn terminate_and_serve(
         }
     }
 
-    let config = match cert_cache.get(&mint_target).await {
+    let tls_mitm_span = tracing::info_span!("tls.mitm", target = %mint_target);
+    let config = match cert_cache.get(&mint_target).instrument(tls_mitm_span).await {
         Ok(c) => c,
         Err(_) => return,
     };

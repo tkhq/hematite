@@ -25,6 +25,8 @@ use hematite_kernel::pipeline::{Outcome, PipelineOutcome, ResponseAction};
 use hematite_kernel::summary::{Body, Headers, Mode, RequestSummary};
 use hematite_kernel::verdict::Trace;
 
+use tracing::Instrument as _;
+
 use crate::audit::{AuditSink, PendingAudit};
 use crate::dial::{connect_upstream, DialError};
 use crate::hop::strip_hop_by_hop;
@@ -360,6 +362,27 @@ async fn handle(
         return Ok(status_response(StatusCode::BAD_REQUEST));
     }
 
+    // Root span for this request.  Created after resolving the target so we
+    // have host/port/path available as span attributes.
+    //
+    // Incoming `traceparent`: no extractor is installed, so roots are always
+    // fresh — this is by design (trust model: the proxy does not propagate
+    // upstream tracing context from clients into its own spans or onwards).
+    // No injector is installed either, so nothing is added to upstream
+    // requests.
+    let span = tracing::info_span!(
+        "hematite.request",
+        otel.name = "hematite.request",
+        method = %method,
+        host = %target.host,
+        port = target.port,
+        path = %target.path,
+        mode = ?ctx.mode,
+        action = tracing::field::Empty,
+        rejected_by = tracing::field::Empty,
+        status = tracing::field::Empty,
+    );
+
     // Headers, wire order preserved (names arrive lowercased from hyper).
     let header_pairs: Vec<(String, String)> = req
         .headers()
@@ -404,6 +427,7 @@ async fn handle(
                 );
                 record.action = Action::ClientCancel;
                 record.duration_ms = ms_since(started);
+                record_outcome(&span, &record);
                 pending.emit(&record);
                 return Ok(status_response(StatusCode::BAD_REQUEST));
             }
@@ -447,6 +471,7 @@ async fn handle(
             record.status_code = Some(response.as_ref().map(|r| r.status).unwrap_or(403));
             record.rejected_by = Some(by);
             record.duration_ms = ms_since(started);
+            record_outcome(&span, &record);
             pending.emit(&record);
             return Ok(match response {
                 Some(r) => build_response(r),
@@ -458,6 +483,7 @@ async fn handle(
             record.status_code = Some(response.status);
             record.stubbed_by = Some(by);
             record.duration_ms = ms_since(started);
+            record_outcome(&span, &record);
             pending.emit(&record);
             return Ok(build_response(response));
         }
@@ -466,6 +492,7 @@ async fn handle(
             record.status_code = Some(502);
             record.error = Some(message);
             record.duration_ms = ms_since(started);
+            record_outcome(&span, &record);
             pending.emit(&record);
             return Ok(status_response(StatusCode::BAD_GATEWAY));
         }
@@ -478,27 +505,37 @@ async fn handle(
         Some((h, p)) => (h.clone(), *p),
         None => (summary.host.clone(), summary.port),
     };
-    let stream =
-        match connect_upstream(proof, &dial_host, dial_port, ctx.scheme_https, &runtime).await {
-            Ok(s) => s,
-            Err(DialError::Denied(denial)) => {
-                record.action = Action::Reject;
-                record.rejected_by = Some("guard".into());
-                record.status_code = Some(502);
-                record.guard = Some(denial);
-                record.duration_ms = ms_since(started);
-                pending.emit(&record);
-                return Ok(status_response(StatusCode::BAD_GATEWAY));
-            }
-            Err(DialError::Failed(message)) => {
-                record.action = Action::Error;
-                record.status_code = Some(502);
-                record.error = Some(message);
-                record.duration_ms = ms_since(started);
-                pending.emit(&record);
-                return Ok(status_response(StatusCode::BAD_GATEWAY));
-            }
-        };
+    let dial_span = tracing::info_span!(
+        parent: &span,
+        "dial",
+        host = %dial_host,
+        port = dial_port,
+    );
+    let stream = match connect_upstream(proof, &dial_host, dial_port, ctx.scheme_https, &runtime)
+        .instrument(dial_span)
+        .await
+    {
+        Ok(s) => s,
+        Err(DialError::Denied(denial)) => {
+            record.action = Action::Reject;
+            record.rejected_by = Some("guard".into());
+            record.status_code = Some(502);
+            record.guard = Some(denial);
+            record.duration_ms = ms_since(started);
+            record_outcome(&span, &record);
+            pending.emit(&record);
+            return Ok(status_response(StatusCode::BAD_GATEWAY));
+        }
+        Err(DialError::Failed(message)) => {
+            record.action = Action::Error;
+            record.status_code = Some(502);
+            record.error = Some(message);
+            record.duration_ms = ms_since(started);
+            record_outcome(&span, &record);
+            pending.emit(&record);
+            return Ok(status_response(StatusCode::BAD_GATEWAY));
+        }
+    };
 
     // Part 07 §3 — header hygiene. A WebSocket handshake keeps Upgrade /
     // Connection so the switch survives to the upstream (Part 05 §5).
@@ -553,17 +590,20 @@ async fn handle(
             record.status_code = Some(502);
             record.error = Some(format!("building upstream request: {e}"));
             record.duration_ms = ms_since(started);
+            record_outcome(&span, &record);
             pending.emit(&record);
             return Ok(status_response(StatusCode::BAD_GATEWAY));
         }
     };
 
     // Send; the response-header timeout covers time-to-headers (Part 07 §4).
+    let upstream_span = tracing::info_span!(parent: &span, "upstream");
     let mut upstream_response = match send_upstream(
         stream,
         upstream_req,
         runtime.upstream_response_header_timeout,
     )
+    .instrument(upstream_span)
     .await
     {
         Ok(r) => r,
@@ -572,6 +612,7 @@ async fn handle(
             record.status_code = Some(502);
             record.error = Some(message);
             record.duration_ms = ms_since(started);
+            record_outcome(&span, &record);
             pending.emit(&record);
             return Ok(status_response(StatusCode::BAD_GATEWAY));
         }
@@ -594,6 +635,7 @@ async fn handle(
         record.action = Action::Allow;
         record.status_code = Some(101);
         record.duration_ms = ms_since(started);
+        record_outcome(&span, &record);
         pending.emit(&record);
 
         // Return the upstream's 101 to the client (keep Upgrade/Connection)
@@ -632,6 +674,7 @@ async fn handle(
             record.action = Action::Allow;
             record.status_code = Some(status.as_u16());
             record.duration_ms = ms_since(started);
+            record_outcome(&span, &record);
             pending.emit(&record);
 
             let (mut parts, body) = upstream_response.into_parts();
@@ -669,6 +712,7 @@ async fn handle(
                 record.rejected_by = Some(by);
             }
             record.duration_ms = ms_since(started);
+            record_outcome(&span, &record);
             pending.emit(&record);
             Ok(build_response(response))
         }
@@ -677,6 +721,7 @@ async fn handle(
             record.status_code = Some(502);
             record.error = Some(message);
             record.duration_ms = ms_since(started);
+            record_outcome(&span, &record);
             pending.emit(&record);
             Ok(status_response(StatusCode::BAD_GATEWAY))
         }
@@ -720,6 +765,19 @@ fn status_response(status: StatusCode) -> Response<OutBody> {
         .status(status)
         .body(empty_body())
         .expect("static response")
+}
+
+/// Record the outcome fields on the root span just before emitting the audit
+/// record.  Kept as a helper to avoid duplicating field names at each of the
+/// many emit call-sites in `handle`.
+fn record_outcome(span: &tracing::Span, record: &hematite_kernel::audit::AuditRecord) {
+    span.record("action", tracing::field::debug(&record.action));
+    if let Some(rb) = &record.rejected_by {
+        span.record("rejected_by", rb.as_str());
+    }
+    if let Some(sc) = record.status_code {
+        span.record("status", sc);
+    }
 }
 
 fn build_response(r: hematite_kernel::verdict::Response) -> Response<OutBody> {
