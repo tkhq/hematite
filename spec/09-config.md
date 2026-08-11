@@ -33,8 +33,9 @@ Defaults:
 
 | Key | Default |
 |-----|---------|
-| `dns.enabled` / `dns.listen` | `true` / `:53` |
-| `proxy.http_listen` / `https_listen` | `:80` / `:443` |
+| `dns.enabled` / `dns.listen` | `true` / `:53` (within a present `dns:` section) |
+| `proxy.http_listen` | `:80` |
+| `proxy.https_listen` | unset (disabled; requires `tls`) |
 | `proxy.tunnel_listen` | unset (disabled) |
 | `proxy.max_request_body_bytes` | 1 MiB |
 | `proxy.max_response_body_bytes` | 0 (uncapped) |
@@ -43,6 +44,16 @@ Defaults:
 | `tls.cert_cache_size` / `leaf_cert_expiry_hours` | 1000 / 72 |
 | `management.api_key_env` | `HEMATITE_MANAGEMENT_API_KEY` |
 | `log.level` | `info` |
+
+**Defaults and conformance levels.** A section's defaults apply only when
+that section is present: an absent `dns:` block means no DNS server (the
+`dns.enabled: true` default is *within* a present block), and the HTTPS and
+tunnel listeners are off unless their `listen` key is set. A listener is
+served only at the level that defines it (Part 00 §4): an L1 implementation
+runs the HTTP listener and ignores any configured HTTPS/tunnel/DNS keys. So
+a minimal L1 config — an `allowlist` transform and nothing else — is valid,
+and feature-specific validation (`dns.proxy_ip`, `tls.ca_cert`/`ca_key`) is
+enforced only when that feature is actually enabled.
 
 ## 3. Validation (reject-at-boot, never at request time)
 

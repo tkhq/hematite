@@ -106,5 +106,8 @@ proxy-openai-abc123`, DNS-steered to the proxy:
 7. `header_allowlist`: all present headers match entries → nothing stripped.
 8. Guard: resolved IP is public → dial; hop-by-hop stripped; exact
    Content-Length (body untouched → original framing).
-9. The response passes back through the (no-op) response path; the audit
-   record is emitted — the one shown in Appendix C §4.
+9. The response passes back through the response path; the audit record is
+   emitted. Its `request_transforms` match the Appendix C §4 vector; a live
+   record also carries `response_transforms` — one `continue` trace per
+   transform invoked on the response path — which the C §4 vector omits
+   because it is a request-path decision vector (Part 08 §2).

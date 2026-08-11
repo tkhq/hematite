@@ -17,8 +17,10 @@ server. Test vectors: Appendix C §1.
 A rule matches a `RequestSummary` when the host clause matches AND (if
 present) some method equals `summary.method` AND (if present) some path
 pattern matches `summary.path`. A rule *list* matches when any rule matches
-(OR). An empty rule list means "match everything" only where a part
-explicitly says so; otherwise it is a config validation error.
+(OR). A **present-but-empty** rule list (`rules: []`) is a config validation
+error. Where a part wants "match everything," it grants that meaning to an
+**absent** `rules` key (e.g. `header_allowlist`, Part 04 §4), never to an
+empty list.
 
 ## 2. Domain globs
 

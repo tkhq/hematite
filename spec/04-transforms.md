@@ -43,7 +43,8 @@ Observation-only header capture for audit enrichment. Never rejects.
 
 - `headers` entries are literal names only (Part 02 §5). For each group whose
   rules match, each named header present on the request is recorded as
-  annotation `header:<Canonical-Name>` → value.
+  annotation `header:<Canonical-Name>` → value. When a header appears more
+  than once, the **first** occurrence in wire order is recorded.
 - Captured values land in the audit log in plain text; the config docs MUST
   carry the operator warning to never annotate headers holding real secrets.
   (Proxy tokens are fine — they are worthless outside the boundary.)
@@ -159,6 +160,9 @@ Observation-only request-body recording.
     rules: [{ host: "api.anthropic.com", methods: ["POST"], paths: ["/v1/messages"] }]
 ```
 
+- `rules` is required and MUST be non-empty: body capture is opt-in per
+  destination, never global. (Unlike `header_allowlist`, an absent `rules`
+  is a config validation error, not "all requests".)
 - The transform's `max_request_body_bytes` is its own capture cap; it shares
   a name with the global `proxy.max_request_body_bytes` (Part 09) but is
   independent of it.
