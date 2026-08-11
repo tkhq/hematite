@@ -11,6 +11,9 @@ it guards.** Security invariants are enforced by the type system (a `Secret`
 that cannot be logged, a dialer that cannot run without a policy verdict) and
 by executable test vectors — not by review discipline.
 
+- Usage guide: [`docs/usage.md`](docs/usage.md) — running and deploying
+- Configuration reference: [`docs/configuration.md`](docs/configuration.md) — every config key
+- Security model & threat model: [`docs/security.md`](docs/security.md)
 - Concept note (Phase 1): [`CONCEPT.md`](CONCEPT.md)
 - Specification (Phase 2): [`spec/`](spec/README.md)
 - Heritage: a from-first-principles redesign of the product category defined
