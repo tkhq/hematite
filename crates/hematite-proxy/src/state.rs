@@ -8,6 +8,9 @@ use std::time::Duration;
 use hematite_kernel::audit::GuardDenial;
 use hematite_kernel::matcher::Cidr;
 use hematite_kernel::pipeline::Pipeline;
+use rustls::ClientConfig;
+
+use crate::tls::CertCache;
 
 /// Part 07 §2 — the post-resolution deny-CIDR check at the dialer.
 pub struct Guard {
@@ -60,6 +63,26 @@ pub struct Runtime {
     pub max_request_body_bytes: usize,
     pub upstream_response_header_timeout: Duration,
     pub dial_timeout: Duration,
+    /// Client config for dialing https upstreams, verified against the
+    /// configured roots (Part 07 §4).
+    pub upstream_tls: Arc<ClientConfig>,
+    /// Per-hostname leaf cache for the MITM listeners (L2); `None` at L1.
+    pub cert_cache: Option<Arc<CertCache>>,
+}
+
+/// Build an upstream TLS client config trusting the OS root store
+/// (Part 07 §4: verified against the system roots).
+pub fn native_upstream_config() -> Result<Arc<ClientConfig>, String> {
+    let mut roots = rustls::RootCertStore::empty();
+    let result = rustls_native_certs::load_native_certs();
+    if result.certs.is_empty() {
+        return Err(format!("no system root certificates: {:?}", result.errors));
+    }
+    for cert in result.certs {
+        let _ = roots.add(cert);
+    }
+    let config = ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
+    Ok(Arc::new(config))
 }
 
 /// The swap point. Handlers `current()` exactly once per request so a

@@ -8,9 +8,49 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use hematite_dns::resolve::{DnsConfig, StaticRecord};
+use hematite_dns::DnsServer;
+use hematite_kernel::matcher::DomainGlob;
 use hematite_proxy::audit::StderrSink;
-use hematite_proxy::config::{build_runtime, load_str, os_env};
+use hematite_proxy::config::{build_runtime, load_str, os_env, DnsResolved};
 use hematite_proxy::state::SharedState;
+
+/// Build and spawn the DNS server (UDP + TCP) from resolved config.
+async fn spawn_dns(dns: &DnsResolved) -> Result<(), String> {
+    use std::collections::HashMap;
+    let mut records = HashMap::new();
+    for (name, rtype, value) in &dns.records {
+        let name = name.trim_end_matches('.').to_ascii_lowercase();
+        let record = match rtype.as_str() {
+            "A" => StaticRecord::A(value.parse().map_err(|_| format!("bad A value {value:?}"))?),
+            "CNAME" => StaticRecord::Cname(value.trim_end_matches('.').to_ascii_lowercase()),
+            other => return Err(format!("unsupported record type {other:?}")),
+        };
+        records.insert(name, record);
+    }
+    let passthrough = dns
+        .passthrough
+        .iter()
+        .map(|g| DomainGlob::parse(g).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let config = DnsConfig { proxy_ip: dns.proxy_ip, passthrough, records, ttl: 60 };
+    let upstream = dns
+        .upstream_resolver
+        .parse()
+        .map_err(|_| format!("bad upstream_resolver {:?}", dns.upstream_resolver))?;
+    let server = std::sync::Arc::new(DnsServer::new(config, upstream));
+
+    let udp = tokio::net::UdpSocket::bind(listen_addr(&dns.listen))
+        .await
+        .map_err(|e| format!("bind dns udp {}: {e}", dns.listen))?;
+    let tcp = tokio::net::TcpListener::bind(listen_addr(&dns.listen))
+        .await
+        .map_err(|e| format!("bind dns tcp {}: {e}", dns.listen))?;
+    eprintln!("hematite: dns server on {}", dns.listen);
+    tokio::spawn(server.clone().serve_udp(udp));
+    tokio::spawn(server.serve_tcp(tcp));
+    Ok(())
+}
 
 fn listen_addr(key: &str) -> String {
     // ":80" → "0.0.0.0:80"
@@ -75,7 +115,46 @@ fn main() -> ExitCode {
             }
         };
         eprintln!("hematite: http listener on {}", config.listen.http);
-        tokio::spawn(hematite_proxy::http::serve_http(http, state.clone(), sink));
+        tokio::spawn(hematite_proxy::http::serve_http(http, state.clone(), sink.clone()));
+
+        // HTTPS MITM listener (L2), served only when TLS is configured.
+        if let Some(listen) = &config.listen.https {
+            if state.current().cert_cache.is_some() {
+                match tokio::net::TcpListener::bind(listen_addr(listen)).await {
+                    Ok(l) => {
+                        eprintln!("hematite: https (MITM) listener on {listen}");
+                        tokio::spawn(hematite_proxy::listen::serve_https(
+                            l,
+                            state.clone(),
+                            sink.clone(),
+                        ));
+                    }
+                    Err(e) => eprintln!("hematite: bind https {listen}: {e}"),
+                }
+            }
+        }
+
+        // Tunnel listener (L2): CONNECT / SOCKS5.
+        if let Some(listen) = &config.listen.tunnel {
+            match tokio::net::TcpListener::bind(listen_addr(listen)).await {
+                Ok(l) => {
+                    eprintln!("hematite: tunnel listener on {listen}");
+                    tokio::spawn(hematite_proxy::listen::serve_tunnel(
+                        l,
+                        state.clone(),
+                        sink.clone(),
+                    ));
+                }
+                Err(e) => eprintln!("hematite: bind tunnel {listen}: {e}"),
+            }
+        }
+
+        // DNS server (L2).
+        if let Some(dns) = &config.dns {
+            if let Err(e) = spawn_dns(dns).await {
+                eprintln!("hematite: dns: {e}");
+            }
+        }
 
         if let (Some(listen), Some(api_key)) =
             (&config.listen.management, &config.management_api_key)

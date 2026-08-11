@@ -1,9 +1,9 @@
-//! Part 05 §1–§2 and §6 — common request handling, the HTTP listener
-//! (origin-form and absolute-form), and failure behavior.
+//! Part 05 §1–§4 and §6 — common request handling; the HTTP, HTTPS-MITM,
+//! and tunnel listeners; and failure behavior.
 //!
-//! L1 deviations (documented, revisited at L2): hyper canonicalizes header
-//! names to lowercase, so original wire casing of names is not preserved
-//! through this listener; WebSocket upgrade is L2 and not served here.
+//! Deviations (documented): hyper canonicalizes header names to lowercase,
+//! so original wire casing of names is not preserved; WebSocket frame
+//! forwarding is not yet implemented (the handshake still runs the pipeline).
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -15,15 +15,18 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::{Body as HyperBody, Frame, Incoming};
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 
-use hematite_kernel::audit::{Action, AuditRecord};
+use hematite_kernel::audit::{Action, AuditRecord, TunnelGroup};
 use hematite_kernel::pipeline::{Outcome, PipelineOutcome, ResponseAction};
 use hematite_kernel::summary::{Body, Headers, Mode, RequestSummary};
+use hematite_kernel::verdict::Trace;
 
 use crate::audit::{AuditSink, PendingAudit};
-use crate::dial::{dial_upstream, DialError};
+use crate::dial::{connect_upstream, DialError};
 use crate::hop::strip_hop_by_hop;
 use crate::state::SharedState;
 
@@ -38,7 +41,41 @@ fn bytes_body(bytes: Vec<u8>) -> OutBody {
     Full::new(Bytes::from(bytes)).map_err(|e| match e {}).boxed()
 }
 
-/// Serve the plain-HTTP listener until the socket closes.
+/// Per-connection context: what the listener knows that the request itself
+/// does not. Shared by every request served on one connection.
+pub struct ConnCtx {
+    pub state: SharedState,
+    pub sink: Arc<dyn AuditSink>,
+    pub remote_addr: String,
+    /// `http`, `https`, or `tunnel` (Part 01 §1).
+    pub mode: Mode,
+    /// Client SNI when the leg was TLS-terminated.
+    pub sni: Option<String>,
+    /// Upstream scheme: https when the client leg was TLS-terminated
+    /// (Part 07 §1).
+    pub scheme_https: bool,
+    /// Tunnel listeners fix the upstream (CONNECT target) and carry the
+    /// handshake traces + `tunnel.target` for audit (Part 05 §4.3).
+    pub forced_upstream: Option<(String, u16)>,
+    pub tunnel_target: Option<String>,
+    pub tunnel_traces: Vec<Trace>,
+}
+
+/// Serve one accepted connection (plaintext or TLS) over hyper's automatic
+/// HTTP/1.1-or-HTTP/2 server, dispatching every request to `handle`.
+pub async fn serve_io<IO>(io: IO, ctx: Arc<ConnCtx>)
+where
+    IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let service = service_fn(move |req| handle(req, ctx.clone()));
+    let mut builder = auto::Builder::new(TokioExecutor::new());
+    // Keep serving after the client half-closes its write side, so a
+    // request-then-shutdown client still receives the response.
+    builder.http1().half_close(true);
+    let _ = builder.serve_connection(TokioIo::new(io), service).await;
+}
+
+/// Serve the plain-HTTP listener until the socket closes (Part 05 §2, L1).
 pub async fn serve_http(
     listener: TcpListener,
     state: SharedState,
@@ -46,18 +83,18 @@ pub async fn serve_http(
 ) -> std::io::Result<()> {
     loop {
         let (stream, remote) = listener.accept().await?;
-        let state = state.clone();
-        let sink = sink.clone();
-        tokio::spawn(async move {
-            let io = TokioIo::new(stream);
-            let service = service_fn(move |req| {
-                handle(req, state.clone(), sink.clone(), remote.to_string())
-            });
-            let _ = hyper::server::conn::http1::Builder::new()
-                .half_close(true)
-                .serve_connection(io, service)
-                .await;
+        let ctx = Arc::new(ConnCtx {
+            state: state.clone(),
+            sink: sink.clone(),
+            remote_addr: remote.to_string(),
+            mode: Mode::Http,
+            sni: None,
+            scheme_https: false,
+            forced_upstream: None,
+            tunnel_target: None,
+            tunnel_traces: Vec::new(),
         });
+        tokio::spawn(serve_io(stream, ctx));
     }
 }
 
@@ -145,6 +182,34 @@ enum TargetError {
     Bad { reason: &'static str, host: String },
 }
 
+/// Resolve the upstream target for a request. A tunnel fixes host/port to
+/// the CONNECT target (path/query still from the inner request-target); a
+/// TLS leg additionally requires SNI to equal the Host hostname
+/// (Part 05 §1 step 3, threat T6).
+fn resolve_target(req: &Request<Incoming>, ctx: &ConnCtx) -> Result<Target, TargetError> {
+    if let Some((host, port)) = &ctx.forced_upstream {
+        let uri = req.uri();
+        return Ok(Target {
+            host: host.clone(),
+            port: *port,
+            path: uri.path().to_string(),
+            query: uri.query().unwrap_or("").to_string(),
+        });
+    }
+    let target = extract_target(req)?;
+    if let Some(sni) = &ctx.sni {
+        // SNI == Host (ports ignored) for the origin-form HTTPS listener.
+        let sni_host = split_host_port(sni).0;
+        if sni_host != target.host {
+            return Err(TargetError::Bad {
+                reason: "SNI does not match Host",
+                host: target.host,
+            });
+        }
+    }
+    Ok(target)
+}
+
 fn extract_target(req: &Request<Incoming>) -> Result<Target, TargetError> {
     let uri = req.uri();
     let host_header = req
@@ -193,19 +258,19 @@ fn extract_target(req: &Request<Incoming>) -> Result<Target, TargetError> {
 }
 
 fn base_record(
+    ctx: &ConnCtx,
     host: &str,
     method: &str,
     path: &str,
-    remote_addr: &str,
     action: Action,
 ) -> AuditRecord {
     AuditRecord {
         host: host.to_string(),
         method: method.to_string(),
         path: path.to_string(),
-        remote_addr: Some(remote_addr.to_string()),
-        sni: None,
-        mode: Mode::Http,
+        remote_addr: Some(ctx.remote_addr.clone()),
+        sni: ctx.sni.clone(),
+        mode: ctx.mode,
         action,
         status_code: None,
         duration_ms: 0.0,
@@ -214,7 +279,11 @@ fn base_record(
         error: None,
         request_transforms: Vec::new(),
         response_transforms: Vec::new(),
-        tunnel: None,
+        // In-tunnel requests carry the handshake's traces (Part 08 §2).
+        tunnel: ctx.tunnel_target.as_ref().map(|target| TunnelGroup {
+            target: target.clone(),
+            request_transforms: ctx.tunnel_traces.clone(),
+        }),
         guard: None,
         body_capture: None,
     }
@@ -222,20 +291,19 @@ fn base_record(
 
 async fn handle(
     req: Request<Incoming>,
-    state: SharedState,
-    sink: Arc<dyn AuditSink>,
-    remote_addr: String,
+    ctx: Arc<ConnCtx>,
 ) -> Result<Response<OutBody>, BoxError> {
-    let runtime = state.current();
+    let runtime = ctx.state.current();
     let started = Instant::now();
-    let mut pending = PendingAudit::new(sink, Some(remote_addr.clone()));
+    let mut pending = PendingAudit::new(ctx.sink.clone(), Some(ctx.remote_addr.clone()));
     let method = req.method().as_str().to_string();
 
-    // Part 05 §1 steps 1–2.
-    let target = match extract_target(&req) {
+    // Part 05 §1 steps 1–2. A tunnel fixes the upstream to the CONNECT
+    // target; the path/query still come from the inner request-target.
+    let target = match resolve_target(&req, &ctx) {
         Ok(t) => t,
         Err(TargetError::Bad { reason, host }) => {
-            let mut record = base_record(&host, &method, req.uri().path(), &remote_addr, Action::Reject);
+            let mut record = base_record(&ctx, &host, &method, req.uri().path(), Action::Reject);
             record.rejected_by = Some("listener".into());
             record.status_code = Some(400);
             record.error = None;
@@ -246,8 +314,7 @@ async fn handle(
         }
     };
     if has_dot_segment(&target.path) {
-        let mut record =
-            base_record(&target.host, &method, &target.path, &remote_addr, Action::Reject);
+        let mut record = base_record(&ctx, &target.host, &method, &target.path, Action::Reject);
         record.rejected_by = Some("listener".into());
         record.status_code = Some(400);
         record.duration_ms = ms_since(started);
@@ -284,7 +351,8 @@ async fn handle(
                 // Client disconnect mid-request (Part 05 §6): no usable
                 // response; audit `client_cancel`.
                 let mut record =
-                    base_record(&target.host, &method, &target.path, &remote_addr, Action::ClientCancel);
+                    base_record(&ctx, &target.host, &method, &target.path, Action::ClientCancel);
+                record.action = Action::ClientCancel;
                 record.duration_ms = ms_since(started);
                 pending.emit(&record);
                 return Ok(status_response(StatusCode::BAD_REQUEST));
@@ -299,7 +367,7 @@ async fn handle(
     };
 
     let mut summary = RequestSummary {
-        mode: Mode::Http,
+        mode: ctx.mode,
         method: method.clone(),
         host: target.host.clone(),
         port: target.port,
@@ -307,8 +375,8 @@ async fn handle(
         query: target.query.clone(),
         headers: Headers::new(header_pairs),
         body: kernel_body,
-        sni: None,
-        remote_addr: Some(remote_addr.clone()),
+        sni: ctx.sni.clone(),
+        remote_addr: Some(ctx.remote_addr.clone()),
     };
 
     // Part 05 §1 step 4 — run the pipeline.
@@ -316,7 +384,7 @@ async fn handle(
         runtime.pipeline.evaluate_request(&mut summary);
 
     // A record template carrying everything the request path produced.
-    let mut record = base_record(&summary.host, &method, &summary.path, &remote_addr, Action::Allow);
+    let mut record = base_record(&ctx, &summary.host, &method, &summary.path, Action::Allow);
     record.request_transforms = request_traces;
     record.body_capture = body_capture;
 
@@ -351,8 +419,21 @@ async fn handle(
         Outcome::Continue(proof) => proof,
     };
 
-    // Part 07 — dial with the guard.
-    let stream = match dial_upstream(proof, &summary.host, summary.port, &runtime).await {
+    // Part 07 — dial with the guard. Tunnels dial the CONNECT target, not
+    // a rewritten host; the scheme follows the client leg.
+    let (dial_host, dial_port) = match &ctx.forced_upstream {
+        Some((h, p)) => (h.clone(), *p),
+        None => (summary.host.clone(), summary.port),
+    };
+    let stream = match connect_upstream(
+        proof,
+        &dial_host,
+        dial_port,
+        ctx.scheme_https,
+        &runtime,
+    )
+    .await
+    {
         Ok(s) => s,
         Err(DialError::Denied(denial)) => {
             record.action = Action::Reject;
@@ -490,11 +571,14 @@ async fn handle(
     }
 }
 
-async fn send_upstream(
-    stream: tokio::net::TcpStream,
+async fn send_upstream<IO>(
+    stream: IO,
     req: Request<OutBody>,
     header_timeout: std::time::Duration,
-) -> Result<Response<Incoming>, String> {
+) -> Result<Response<Incoming>, String>
+where
+    IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let io = TokioIo::new(stream);
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
         .await

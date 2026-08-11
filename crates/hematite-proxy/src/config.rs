@@ -14,8 +14,11 @@ use serde::Deserialize;
 
 use hematite_kernel::config::{build_pipeline_with_resolver, ConfigError, TransformSpec};
 
+use std::sync::Arc;
+
 use crate::resolver::EnvFileResolver;
-use crate::state::{Guard, Runtime};
+use crate::state::{native_upstream_config, Guard, Runtime};
+use crate::tls::{CertCache, SigningCa};
 
 /// Raw YAML shape. Unknown keys fail parsing at every level (threat T9:
 /// typos must not silently no-op).
@@ -153,6 +156,15 @@ pub struct ListenKeys {
     pub management: Option<String>,
 }
 
+/// Resolved TLS settings for the MITM listeners (Part 05 §3, Part 09).
+#[derive(Debug, Clone)]
+pub struct TlsResolved {
+    pub ca_cert: String,
+    pub ca_key: String,
+    pub cert_cache_size: usize,
+    pub leaf_cert_expiry_hours: u64,
+}
+
 /// The resolved configuration after defaults.
 pub struct Config {
     pub listen: ListenKeys,
@@ -164,8 +176,21 @@ pub struct Config {
     pub upstream_deny_cidrs: Option<Vec<String>>,
     pub management_api_key: Option<String>,
     pub log_level: String,
+    pub tls: Option<TlsResolved>,
+    /// DNS server settings, when enabled (Part 06).
+    pub dns: Option<DnsResolved>,
     pub transforms: Vec<TransformSpec>,
     pub warnings: Vec<String>,
+}
+
+/// Resolved DNS server settings (Part 06 §1).
+#[derive(Debug, Clone)]
+pub struct DnsResolved {
+    pub listen: String,
+    pub proxy_ip: std::net::Ipv4Addr,
+    pub upstream_resolver: String,
+    pub passthrough: Vec<String>,
+    pub records: Vec<(String, String, String)>,
 }
 
 /// Env-overridable scalar keys (Part 09 §2 step 2). The env name is the
@@ -367,6 +392,32 @@ pub fn load_str(
     let built = build_pipeline_with_resolver(&transforms, &EnvFileResolver)?;
     warnings.extend(built.warnings);
 
+    let tls = raw.tls.as_ref().map(|t| TlsResolved {
+        ca_cert: t.ca_cert.clone(),
+        ca_key: t.ca_key.clone(),
+        cert_cache_size: t.cert_cache_size.unwrap_or(1000),
+        leaf_cert_expiry_hours: t.leaf_cert_expiry_hours.unwrap_or(72),
+    });
+
+    let dns = match &raw.dns {
+        Some(d) if d.enabled => Some(DnsResolved {
+            listen: d.listen.clone().unwrap_or_else(|| ":53".into()),
+            // proxy_ip presence + IPv4 validity were checked above.
+            proxy_ip: d.proxy_ip.as_ref().unwrap().parse().unwrap(),
+            upstream_resolver: d
+                .upstream_resolver
+                .clone()
+                .unwrap_or_else(|| "8.8.8.8:53".into()),
+            passthrough: d.passthrough.clone(),
+            records: d
+                .records
+                .iter()
+                .map(|r| (r.name.clone(), r.record_type.clone(), r.value.clone()))
+                .collect(),
+        }),
+        _ => None,
+    };
+
     Ok(Config {
         listen,
         max_request_body_bytes,
@@ -375,6 +426,8 @@ pub fn load_str(
         upstream_deny_cidrs: raw.proxy.upstream_deny_cidrs,
         management_api_key,
         log_level,
+        tls,
+        dns,
         transforms,
         warnings,
     })
@@ -382,17 +435,37 @@ pub fn load_str(
 
 /// Compile a loaded config into a runnable `Runtime`.
 pub fn build_runtime(config: &Config) -> Result<Runtime, LoadError> {
+    crate::tls::install_crypto_provider();
     let pipeline = build_pipeline_with_resolver(&config.transforms, &EnvFileResolver)?.pipeline;
     let guard = match &config.upstream_deny_cidrs {
         None => Guard::default_set(),
         Some(cidrs) => Guard::new(cidrs).map_err(LoadError)?,
     };
+    let upstream_tls = native_upstream_config().map_err(LoadError)?;
+
+    // Build the MITM cert cache when TLS is configured and an MITM listener
+    // (https/tunnel) is enabled (Part 05 §3).
+    let cert_cache = match &config.tls {
+        Some(tls) if config.listen.https.is_some() || config.listen.tunnel.is_some() => {
+            let cert_pem = std::fs::read_to_string(&tls.ca_cert)
+                .map_err(|e| LoadError(format!("tls.ca_cert {:?}: {e}", tls.ca_cert)))?;
+            let key_pem = std::fs::read_to_string(&tls.ca_key)
+                .map_err(|e| LoadError(format!("tls.ca_key {:?}: {e}", tls.ca_key)))?;
+            let ca = SigningCa::from_pem(&cert_pem, &key_pem, tls.leaf_cert_expiry_hours)
+                .map_err(|e| LoadError(e.to_string()))?;
+            Some(Arc::new(CertCache::new(Arc::new(ca), tls.cert_cache_size)))
+        }
+        _ => None,
+    };
+
     Ok(Runtime {
         pipeline,
         guard,
         max_request_body_bytes: config.max_request_body_bytes,
         upstream_response_header_timeout: config.upstream_response_header_timeout,
         dial_timeout: Duration::from_secs(30),
+        upstream_tls,
+        cert_cache,
     })
 }
 

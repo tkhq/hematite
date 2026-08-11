@@ -84,6 +84,8 @@ async fn spawn_proxy(pipeline: hematite_kernel::pipeline::Pipeline, guard: Guard
         max_request_body_bytes: 1 << 20,
         upstream_response_header_timeout: std::time::Duration::from_secs(5),
         dial_timeout: std::time::Duration::from_secs(5),
+        upstream_tls: hematite_proxy::state::native_upstream_config().unwrap(),
+        cert_cache: None,
     };
     let state = SharedState::new(runtime);
     let sink = Arc::new(TestSink::default());

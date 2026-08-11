@@ -7,5 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+hematite-kernel.workspace = true
 hematite-proxy.workspace = true
+hematite-dns.workspace = true
 tokio.workspace = true
