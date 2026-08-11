@@ -15,3 +15,4 @@ pub mod management;
 pub mod resolver;
 pub mod state;
 pub mod tls;
+pub mod tunnel;
