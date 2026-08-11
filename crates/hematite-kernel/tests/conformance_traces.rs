@@ -14,7 +14,7 @@ fn run_case(case: &serde_json::Value) -> serde_json::Value {
     let built = match case.get("resolver") {
         Some(resolver) => {
             let resolver = MapResolver::from_value(resolver);
-            build_pipeline_with_resolver(&specs, &resolver).expect("vector pipeline builds")
+            build_pipeline_with_resolver(&specs, std::sync::Arc::new(resolver)).expect("vector pipeline builds")
         }
         None => build_pipeline(&specs).expect("vector pipeline builds"),
     };

@@ -2,6 +2,8 @@
 //! Part 09, as data). Validation is reject-at-load, never at request time.
 
 use std::fmt;
+use std::sync::Arc;
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -159,30 +161,49 @@ enum SourceSpec {
     },
     File {
         path: String,
-        // Accepted and validated as part of the schema; TTL-based refresh
-        // is a runtime concern layered above build-time resolution and is
-        // not yet consumed by the kernel (see resolver.rs).
         #[serde(default)]
-        #[allow(dead_code)]
         ttl: Option<String>,
         #[serde(default)]
-        #[allow(dead_code)]
         failure_ttl: Option<String>,
         #[serde(default)]
         json_key: Option<String>,
     },
 }
 
+/// Parse a duration: bare seconds, or `<n>ms`/`<n>s`/`<n>m`.
+fn parse_duration(s: &str) -> Result<Duration, ConfigError> {
+    let s = s.trim();
+    let (digits, unit) = match s.find(|c: char| !c.is_ascii_digit()) {
+        Some(i) => s.split_at(i),
+        None => (s, "s"),
+    };
+    let n: u64 = digits
+        .parse()
+        .map_err(|_| ConfigError(format!("invalid duration: {s:?}")))?;
+    match unit {
+        "ms" => Ok(Duration::from_millis(n)),
+        "s" => Ok(Duration::from_secs(n)),
+        "m" => Ok(Duration::from_secs(n * 60)),
+        other => Err(ConfigError(format!("invalid duration unit {other:?} in {s:?}"))),
+    }
+}
+
 impl SourceSpec {
-    fn into_ref(self) -> SourceRef {
-        match self {
-            SourceSpec::Env { var, json_key } => {
-                SourceRef { kind: SourceKind::Env { var }, json_key }
-            }
-            SourceSpec::File { path, json_key, .. } => {
-                SourceRef { kind: SourceKind::File { path }, json_key }
-            }
-        }
+    fn into_ref(self) -> Result<SourceRef, ConfigError> {
+        Ok(match self {
+            SourceSpec::Env { var, json_key } => SourceRef {
+                kind: SourceKind::Env { var },
+                json_key,
+                ttl: None,
+                failure_ttl: None,
+            },
+            SourceSpec::File { path, json_key, ttl, failure_ttl } => SourceRef {
+                kind: SourceKind::File { path },
+                json_key,
+                ttl: ttl.as_deref().map(parse_duration).transpose()?,
+                failure_ttl: failure_ttl.as_deref().map(parse_duration).transpose()?,
+            },
+        })
     }
 }
 
@@ -211,7 +232,7 @@ fn build_secret_spec(entry: &SecretEntry) -> Result<SecretSpec, ConfigError> {
         ));
     }
     Ok(SecretSpec {
-        source: entry.source.clone().into_ref(),
+        source: entry.source.clone().into_ref()?,
         proxy_value: entry.proxy_value.clone(),
         match_headers,
         match_query: entry.match_query,
@@ -224,7 +245,7 @@ fn build_secret_spec(entry: &SecretEntry) -> Result<SecretSpec, ConfigError> {
 
 fn build_transform(
     spec: &TransformSpec,
-    resolver: Option<&dyn SecretResolver>,
+    resolver: Option<&Arc<dyn SecretResolver>>,
 ) -> Result<Box<dyn Transform>, ConfigError> {
     match spec.name.as_str() {
         "allowlist" => {
@@ -301,7 +322,7 @@ fn build_transform(
                 .iter()
                 .map(build_secret_spec)
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(Box::new(Secrets::build(specs, resolver)))
+            Ok(Box::new(Secrets::build(specs, resolver.clone())))
         }
         other => Err(ConfigError(format!(
             "unknown transform {other:?}: the v1 registry is closed (Part 03 §5)"
@@ -317,18 +338,18 @@ pub fn build_pipeline(specs: &[TransformSpec]) -> Result<BuiltPipeline, ConfigEr
     build_pipeline_inner(specs, None)
 }
 
-/// L3 entry: resolves `secrets` sources through `resolver` at build time
-/// (Part 01 §5, Part 04 §3).
+/// L3 entry: `secrets` transforms hold `resolver` for request-time
+/// resolution (Part 01 §5, Part 04 §3).
 pub fn build_pipeline_with_resolver(
     specs: &[TransformSpec],
-    resolver: &dyn SecretResolver,
+    resolver: Arc<dyn SecretResolver>,
 ) -> Result<BuiltPipeline, ConfigError> {
-    build_pipeline_inner(specs, Some(resolver))
+    build_pipeline_inner(specs, Some(&resolver))
 }
 
 fn build_pipeline_inner(
     specs: &[TransformSpec],
-    resolver: Option<&dyn SecretResolver>,
+    resolver: Option<&Arc<dyn SecretResolver>>,
 ) -> Result<BuiltPipeline, ConfigError> {
     let allowlist_pos = specs.iter().position(|s| s.name == "allowlist");
     // Part 04 §1: default-deny is structural — a config with no allowlist

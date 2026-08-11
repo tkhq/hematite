@@ -1,34 +1,109 @@
 //! Part 04 §3.1 — the concrete secret sources: `env` (the proxy's
-//! environment) and `file`. The kernel resolves through this at pipeline
-//! build time (Part 01 §5); it is the only I/O the L3 policy path performs.
+//! environment) and `file`. The kernel's secrets transform resolves through
+//! this at request time (Part 01 §5); it is the only I/O the L3 policy path
+//! performs, and it caches with per-source TTLs so a file secret can rotate
+//! without a reload.
 //!
-//! TTL/failure-TTL caching (Part 04 §3.1) is a runtime refinement layered
-//! above build-time resolution and is not yet implemented; env and file are
-//! read once at build. This is flagged as a known gap.
+//! Caching rules (Part 04 §3.1):
+//! - success is cached for `ttl` (default: forever); env is always forever.
+//! - failure is cached for `failure_ttl` (default 1m) so a broken backend
+//!   does not stall every request.
+//! - on a refresh failure after a prior success, the stale value is served
+//!   and a retry is scheduled at `ttl/2`.
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use hematite_kernel::secret::{ResolveError, Secret, SecretResolver, SourceKind, SourceRef};
 
-/// Resolves `env` from the process environment and `file` from disk.
-pub struct EnvFileResolver;
+const DEFAULT_FAILURE_TTL: Duration = Duration::from_secs(60);
+
+/// A monotonic clock in milliseconds, injectable for tests.
+pub trait Clock: Send + Sync {
+    fn now_ms(&self) -> u64;
+}
+
+/// The real clock: milliseconds since resolver construction.
+pub struct MonotonicClock(Instant);
+
+impl Default for MonotonicClock {
+    fn default() -> Self {
+        MonotonicClock(Instant::now())
+    }
+}
+
+impl Clock for MonotonicClock {
+    fn now_ms(&self) -> u64 {
+        self.0.elapsed().as_millis() as u64
+    }
+}
+
+/// One cache entry per source name.
+struct Entry {
+    /// The last successfully resolved value, if any (kept for stale-serve).
+    value: Option<Vec<u8>>,
+    /// When the current cached state was recorded (ms).
+    stamp: u64,
+    /// True if the last resolution succeeded.
+    ok: bool,
+}
+
+/// Resolves `env` from the process environment and `file` from disk, with
+/// per-source TTL caching.
+pub struct EnvFileResolver {
+    cache: Mutex<HashMap<String, Entry>>,
+    clock: Box<dyn Clock>,
+}
+
+impl Default for EnvFileResolver {
+    fn default() -> Self {
+        EnvFileResolver {
+            cache: Mutex::new(HashMap::new()),
+            clock: Box::new(MonotonicClock::default()),
+        }
+    }
+}
 
 impl EnvFileResolver {
-    fn apply_json_key(
-        value: Vec<u8>,
-        source: &SourceRef,
-    ) -> Result<Secret, ResolveError> {
-        match &source.json_key {
-            None => Ok(Secret::new(value)),
-            Some(key) => {
-                let parsed: serde_json::Value = serde_json::from_slice(&value).map_err(|_| {
-                    ResolveError { source: source.clone(), reason: "value is not JSON".into() }
-                })?;
-                match parsed.get(key).and_then(|v| v.as_str()) {
-                    Some(s) => Ok(Secret::new(s.as_bytes().to_vec())),
-                    None => Err(ResolveError {
+    pub fn with_clock(clock: Box<dyn Clock>) -> Self {
+        EnvFileResolver { cache: Mutex::new(HashMap::new()), clock }
+    }
+
+    /// Read the raw source value (no caching), applying `json_key`.
+    fn read(source: &SourceRef) -> Result<Vec<u8>, ResolveError> {
+        let raw = match &source.kind {
+            SourceKind::Env { var } => match std::env::var(var) {
+                Ok(v) if !v.is_empty() => v.into_bytes(),
+                _ => {
+                    return Err(ResolveError {
                         source: source.clone(),
-                        reason: format!("json_key {key:?} missing or not a string"),
-                    }),
+                        reason: "env var unset or empty".into(),
+                    })
                 }
+            },
+            SourceKind::File { path } => std::fs::read(path).map_err(|e| ResolveError {
+                source: source.clone(),
+                reason: format!("cannot read file: {e}"),
+            })?,
+        };
+        apply_json_key(raw, source)
+    }
+}
+
+fn apply_json_key(value: Vec<u8>, source: &SourceRef) -> Result<Vec<u8>, ResolveError> {
+    match &source.json_key {
+        None => Ok(value),
+        Some(key) => {
+            let parsed: serde_json::Value = serde_json::from_slice(&value).map_err(|_| {
+                ResolveError { source: source.clone(), reason: "value is not JSON".into() }
+            })?;
+            match parsed.get(key).and_then(|v| v.as_str()) {
+                Some(s) => Ok(s.as_bytes().to_vec()),
+                None => Err(ResolveError {
+                    source: source.clone(),
+                    reason: format!("json_key {key:?} missing or not a string"),
+                }),
             }
         }
     }
@@ -36,22 +111,60 @@ impl EnvFileResolver {
 
 impl SecretResolver for EnvFileResolver {
     fn resolve(&self, source: &SourceRef) -> Result<Secret, ResolveError> {
-        match &source.kind {
-            SourceKind::Env { var } => match std::env::var(var) {
-                Ok(v) if !v.is_empty() => Self::apply_json_key(v.into_bytes(), source),
-                _ => Err(ResolveError {
-                    source: source.clone(),
-                    reason: "env var unset or empty".into(),
-                }),
-            },
-            SourceKind::File { path } => match std::fs::read(path) {
-                // Exact file contents, no trimming (Part 04 §3.1).
-                Ok(bytes) => Self::apply_json_key(bytes, source),
-                Err(e) => Err(ResolveError {
-                    source: source.clone(),
-                    reason: format!("cannot read file: {e}"),
-                }),
-            },
+        let now = self.clock.now_ms();
+        let name = source.name().to_string();
+        let ttl_ms = source.ttl.map(|d| d.as_millis() as u64);
+        let failure_ttl_ms =
+            source.failure_ttl.unwrap_or(DEFAULT_FAILURE_TTL).as_millis() as u64;
+
+        let mut cache = self.cache.lock().expect("resolver cache");
+        if let Some(entry) = cache.get(&name) {
+            if entry.ok {
+                let fresh = ttl_ms.is_none_or(|ttl| now.saturating_sub(entry.stamp) < ttl);
+                if fresh {
+                    return Ok(Secret::new(entry.value.clone().unwrap_or_default()));
+                }
+                // Expired: attempt a refresh.
+                match Self::read(source) {
+                    Ok(bytes) => {
+                        cache.insert(name, Entry { value: Some(bytes.clone()), stamp: now, ok: true });
+                        return Ok(Secret::new(bytes));
+                    }
+                    Err(_) => {
+                        // Refresh failed after a prior success: serve the
+                        // stale value and schedule the next retry at ttl/2.
+                        let stale = entry.value.clone().unwrap_or_default();
+                        let retry_stamp = ttl_ms
+                            .map(|ttl| now.saturating_sub(ttl / 2))
+                            .unwrap_or(now);
+                        cache.insert(
+                            name,
+                            Entry { value: Some(stale.clone()), stamp: retry_stamp, ok: true },
+                        );
+                        return Ok(Secret::new(stale));
+                    }
+                }
+            } else {
+                // Cached failure: hold it until failure_ttl elapses.
+                if now.saturating_sub(entry.stamp) < failure_ttl_ms {
+                    return Err(ResolveError {
+                        source: source.clone(),
+                        reason: "cached failure".into(),
+                    });
+                }
+            }
+        }
+
+        // No entry, or a failure cache that has expired: read fresh.
+        match Self::read(source) {
+            Ok(bytes) => {
+                cache.insert(name, Entry { value: Some(bytes.clone()), stamp: now, ok: true });
+                Ok(Secret::new(bytes))
+            }
+            Err(e) => {
+                cache.insert(name, Entry { value: None, stamp: now, ok: false });
+                Err(e)
+            }
         }
     }
 }

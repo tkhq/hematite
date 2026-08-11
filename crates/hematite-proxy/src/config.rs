@@ -379,9 +379,12 @@ pub fn load_str(
         })
         .collect::<Result<Vec<_>, LoadError>>()?;
     // Secret env sources are read from the proxy's environment (Part 04
-    // §3.1); file sources are read from disk. Both resolve here so config
-    // errors surface at load, not at request time.
-    let built = build_pipeline_with_resolver(&transforms, &EnvFileResolver)?;
+    // §3.1); file sources are read from disk. Resolution is request-time
+    // (the resolver caches with per-source TTLs); building only validates
+    // shape here.
+    let resolver: Arc<dyn hematite_kernel::secret::SecretResolver> =
+        Arc::new(EnvFileResolver::default());
+    let built = build_pipeline_with_resolver(&transforms, resolver)?;
     warnings.extend(built.warnings);
 
     let tls = raw.tls.as_ref().map(|t| TlsResolved {
@@ -432,7 +435,9 @@ pub fn load_str(
 /// Compile a loaded config into a runnable `Runtime`.
 pub fn build_runtime(config: &Config) -> Result<Runtime, LoadError> {
     crate::tls::install_crypto_provider();
-    let pipeline = build_pipeline_with_resolver(&config.transforms, &EnvFileResolver)?.pipeline;
+    let resolver: Arc<dyn hematite_kernel::secret::SecretResolver> =
+        Arc::new(EnvFileResolver::default());
+    let pipeline = build_pipeline_with_resolver(&config.transforms, resolver)?.pipeline;
     let guard = match &config.upstream_deny_cidrs {
         None => Guard::default_set(),
         Some(cidrs) => Guard::new(cidrs).map_err(LoadError)?,

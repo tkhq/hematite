@@ -46,6 +46,11 @@ pub struct SourceRef {
     /// Optional: parse the resolved value as JSON and take this top-level
     /// string field (Part 04 §3.1).
     pub json_key: Option<String>,
+    /// Success cache lifetime (Part 04 §3.1). `None` = cache forever. The
+    /// kernel carries this as a value; the resolver enforces it.
+    pub ttl: Option<std::time::Duration>,
+    /// Failure cache lifetime. `None` = the resolver's default (1m).
+    pub failure_ttl: Option<std::time::Duration>,
 }
 
 impl SourceRef {

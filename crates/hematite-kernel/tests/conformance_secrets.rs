@@ -64,7 +64,7 @@ fn secrets_swap_vectors() {
             { "name": "secrets", "config": { "secrets": [case["secret"]] } }
         ]))
         .unwrap();
-        let built = build_pipeline_with_resolver(&specs, &resolver)
+        let built = build_pipeline_with_resolver(&specs, std::sync::Arc::new(resolver))
             .unwrap_or_else(|e| panic!("case {id} builds: {e}"));
 
         let mut summary = summary_from(&case["request"]);

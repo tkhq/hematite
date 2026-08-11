@@ -5,26 +5,23 @@
 //! Vectors: Appendix C §2 (`spec/vectors/secrets-swap.json`) and the
 //! full-pipeline vector in Appendix C §4.
 
+use std::sync::Arc;
+
 use serde_json::{json, Value};
 
 use crate::codec::{base64_decode, base64_encode, percent_encode, replace_all};
 use crate::matcher::{any_rule_matches, canonical_name, HeaderNameEntry, Rule};
 use crate::pipeline::{Ctx, Transform, TransformError};
-use crate::secret::{ResolveError, Secret, SecretResolver, SourceRef};
+use crate::secret::{SecretResolver, SourceRef};
 use crate::summary::RequestSummary;
 use crate::verdict::Verdict;
 
-/// A secret resolved (or not) at pipeline build time.
-enum SecretState {
-    Resolved(Secret),
-    /// Resolution failed; request-time behavior follows `require`.
-    Unavailable,
-}
-
-/// One configured secret after build-time resolution.
+/// One configured secret. Resolution happens at request time through the
+/// injected resolver (Part 01 §5, Appendix E), so a file source with a TTL
+/// can refresh without rebuilding the pipeline (Part 04 §3.1).
 struct ConfiguredSecret {
+    source: SourceRef,
     source_name: String,
-    state: SecretState,
     proxy_value: Vec<u8>,
     /// `None` = scan all headers (`match_headers: []`).
     match_headers: Option<Vec<HeaderNameEntry>>,
@@ -37,6 +34,7 @@ struct ConfiguredSecret {
 
 pub struct Secrets {
     secrets: Vec<ConfiguredSecret>,
+    resolver: Arc<dyn SecretResolver>,
 }
 
 /// The build-time spec of one secret (parsed from config, before
@@ -53,33 +51,26 @@ pub struct SecretSpec {
 }
 
 impl Secrets {
-    /// Resolve every secret through the injected resolver (Part 01 §5) and
-    /// build the transform. Resolution failure is stored as `Unavailable`,
-    /// not a build error — request-time `require` decides (Appendix C §2
-    /// case 8). The proxy layer separately enforces "env missing = boot
-    /// error" (Part 09 §3).
-    pub fn build(specs: Vec<SecretSpec>, resolver: &dyn SecretResolver) -> Self {
+    /// Build the transform, holding the resolver for request-time
+    /// resolution. The resolver caches and refreshes per source TTL
+    /// (Part 04 §3.1); the kernel stays clock-free (INV-4 holds relative to
+    /// the resolver's returned value, Part 03 §6).
+    pub fn build(specs: Vec<SecretSpec>, resolver: Arc<dyn SecretResolver>) -> Self {
         let secrets = specs
             .into_iter()
-            .map(|s| {
-                let state = match resolver.resolve(&s.source) {
-                    Ok(secret) => SecretState::Resolved(secret),
-                    Err(ResolveError { .. }) => SecretState::Unavailable,
-                };
-                ConfiguredSecret {
-                    source_name: s.source.name().to_string(),
-                    state,
-                    proxy_value: s.proxy_value.into_bytes(),
-                    match_headers: s.match_headers,
-                    match_query: s.match_query,
-                    match_path: s.match_path,
-                    match_body: s.match_body,
-                    require: s.require,
-                    rules: s.rules,
-                }
+            .map(|s| ConfiguredSecret {
+                source_name: s.source.name().to_string(),
+                source: s.source,
+                proxy_value: s.proxy_value.into_bytes(),
+                match_headers: s.match_headers,
+                match_query: s.match_query,
+                match_path: s.match_path,
+                match_body: s.match_body,
+                require: s.require,
+                rules: s.rules,
             })
             .collect();
-        Secrets { secrets }
+        Secrets { secrets, resolver }
     }
 }
 
@@ -106,8 +97,10 @@ impl Transform for Secrets {
                 continue;
             }
 
-            let resolved = match &secret.state {
-                SecretState::Unavailable => {
+            // Resolve at request time through the resolver's cache.
+            let resolved = match self.resolver.resolve(&secret.source) {
+                Ok(s) => s,
+                Err(_) => {
                     // Part 04 §3.3: require + unavailable → Reject.
                     if secret.require {
                         return Ok(Verdict::Reject(None));
@@ -115,8 +108,8 @@ impl Transform for Secrets {
                     unavailable.push(secret.source_name.clone());
                     continue;
                 }
-                SecretState::Resolved(s) => s,
             };
+            let resolved = &resolved;
 
             // Over-cap body cannot be rewritten soundly (Part 01 §4).
             if secret.match_body && req.body.over_cap() {
