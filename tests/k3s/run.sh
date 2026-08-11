@@ -18,6 +18,8 @@ diagnostics() {
   echo "--- client job ---"
   kubectl describe job accept-client || true
   kubectl logs job/accept-client --tail=200 || true
+  echo "--- upgrade job ---"
+  kubectl logs job/accept-upgrade --tail=50 || true
 }
 
 cleanup() {
@@ -96,5 +98,13 @@ kubectl apply -f tests/k3s/fixtures.yaml
 wait_job accept-client 240
 kubectl logs job/accept-client
 kubectl logs job/accept-client | grep -q "ACCEPTANCE: PASS"
+
+echo "=== step 11: helm upgrade rolls config ==="
+grep -v 'upgrade-test-marker' tests/k3s/values.yaml > "$tmp/values-upgrade.yaml"
+helm upgrade hematite deploy/chart/hematite -f "$tmp/values-upgrade.yaml"
+kubectl rollout status deploy/hematite --timeout=120s
+kubectl apply -f tests/k3s/fixtures-upgrade.yaml
+wait_job accept-upgrade 120
+kubectl logs job/accept-upgrade
 
 echo "k3s integration: PASS"

@@ -1,0 +1,34 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: accept-upgrade
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: { app: accept-client }   # same egress lockdown applies
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: client
+          image: accept-client:test
+          imagePullPolicy: Never
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -uo pipefail
+              PROXY=$(getent hosts hematite | awk '{print $1}' | head -1)
+              echo "nameserver $PROXY" > /etc/resolv.conf
+              for i in $(seq 1 12); do
+                code=$(curl -s -o /dev/null -w '%{http_code}' --cacert /ca/ca.crt https://imds-test.local/)
+                [ "$code" = 403 ] && { echo "upgrade roll ok: 403"; exit 0; }
+                sleep 5
+              done
+              echo "FAIL: expected 403 after upgrade, last code: $code"
+              exit 1
+          volumeMounts:
+            - { name: ca, mountPath: /ca, readOnly: true }
+      volumes:
+        - name: ca
+          configMap: { name: accept-ca }
