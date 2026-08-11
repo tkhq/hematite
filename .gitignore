@@ -1,3 +1,4 @@
 /target
 /tests/acceptance/certs/
 /tests/acceptance/secrets/
+.superpowers/
