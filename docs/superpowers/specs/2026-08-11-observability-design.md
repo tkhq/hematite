@@ -37,7 +37,9 @@ observability:
 ```
 
 Env overrides follow the existing `HEMATITE_<SECTION>_<KEY>` mechanism
-(`HEMATITE_OBSERVABILITY_OTLP_ENDPOINT`, …). Validation fails fast at
+(`HEMATITE_OBSERVABILITY_OTLP_ENDPOINT`, …). The current override
+walker only handles two-segment paths; it is generalized to N segments
+as part of this work (behavior for existing two-segment keys unchanged). Validation fails fast at
 boot: `otlp.enabled` without `endpoint` is an error; `sample_ratio`
 outside [0,1] is an error.
 
@@ -59,8 +61,8 @@ emission point (no new plumbing through the kernel):
 
 | Metric | Type | Labels |
 |---|---|---|
-| `hematite_requests_total` | counter | `listener`, `mode`, `action`, `rejected_by` (transform name or `""`) |
-| `hematite_request_duration_seconds` | histogram | `listener`, `action`; buckets 0.005–30s (fixed) |
+| `hematite_requests_total` | counter | `mode` (http / https / tunnel), `action`, `rejected_by` (transform name, "listener", "guard", or `""`) |
+| `hematite_request_duration_seconds` | histogram | `mode`, `action`; buckets 0.005–30s (fixed) |
 | `hematite_upstream_dials_total` | counter | `result`: ok / guard-denied / dns-error / connect-error / tls-error |
 | `hematite_dns_queries_total` | counter | `outcome`: intercept / static / passthrough / error |
 | `hematite_tls_leaf_cache_events_total` | counter | `event`: hit / miss |
