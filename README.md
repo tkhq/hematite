@@ -52,3 +52,9 @@ docker compose up --abort-on-container-exit --exit-code-from client
 Status: spec v0.1 and a full v1 implementation (L0–L3) — all conformance
 vectors, the acceptance test, and the container harness pass. Milestones in
 `spec/README.md` §Status.
+
+## Deploy on Kubernetes
+
+A Helm chart lives at `deploy/chart/hematite/` — one hematite Deployment +
+Service per namespace, with an optional NetworkPolicy that locks client
+pods' egress to the proxy. See [docs/kubernetes.md](docs/kubernetes.md).
