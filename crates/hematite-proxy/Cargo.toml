@@ -23,3 +23,6 @@ tokio-rustls.workspace = true
 rustls-native-certs.workspace = true
 rcgen.workspace = true
 lru.workspace = true
+
+[dev-dependencies]
+jsonschema = "0.49.9"

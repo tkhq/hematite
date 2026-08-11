@@ -73,6 +73,9 @@ pub struct Runtime {
 /// Build an upstream TLS client config trusting the OS root store
 /// (Part 07 §4: verified against the system roots).
 pub fn native_upstream_config() -> Result<Arc<ClientConfig>, String> {
+    // Building a rustls config needs a process crypto provider; ensure one
+    // (idempotent) so direct callers don't have to.
+    crate::tls::install_crypto_provider();
     let mut roots = rustls::RootCertStore::empty();
     let result = rustls_native_certs::load_native_certs();
     if result.certs.is_empty() {

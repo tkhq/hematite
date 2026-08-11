@@ -22,6 +22,8 @@ use hematite_proxy::listen::serve_https;
 use hematite_proxy::state::SharedState;
 use hematite_proxy::tls::install_crypto_provider;
 
+mod common;
+
 #[derive(Default, Clone)]
 struct TestSink(Arc<Mutex<Vec<AuditRecord>>>);
 impl AuditSink for TestSink {
@@ -246,7 +248,12 @@ transforms:
         .expect("reject record");
     assert_eq!(reject.rejected_by.as_deref(), Some("secrets"));
 
-    // Step 10 — no record anywhere contains the real secret value (INV-1).
+    // Step 10 — every emitted record validates against the normative JSON
+    // Schema, and none contains the real secret value (INV-1).
+    assert!(!records.is_empty(), "records were emitted");
+    for record in &records {
+        common::assert_valid_record(record);
+    }
     let all_json = serde_json::to_string(&records).unwrap();
     assert!(!all_json.contains("sk-real-acceptance"), "a record leaked the real secret");
     assert!(!all_json.contains("internal-real"), "a record leaked the file secret");
