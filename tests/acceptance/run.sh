@@ -4,7 +4,7 @@
 # every hostname is intercepted to the proxy; --cacert trusts the MITM CA.
 set -uo pipefail
 
-CA=/certs/ca.crt
+CA=${CA:-/certs/ca.crt}
 fail=0
 
 # Discover the proxy's IP via Docker's embedded DNS (retry while hematite
@@ -74,7 +74,7 @@ code=$(curl -s -o /dev/null -w '%{http_code}' --cacert "$CA" https://imds-test.l
 [ "$code" = 502 ] && ok "guard 502" || bad "expected 502, got $code"
 
 step 9 "management reload"
-code=$(curl -s -o /dev/null -w '%{http_code}' -XPOST -H 'Authorization: Bearer reload-token' http://"$PROXY":9092/v1/reload)
+code=$(curl -s -o /dev/null -w '%{http_code}' -XPOST -H "Authorization: Bearer ${MGMT_TOKEN:-reload-token}" http://"$PROXY":9092/v1/reload)
 [ "$code" = 200 ] && ok "reload 200" || bad "expected 200, got $code"
 code=$(curl -s -o /dev/null -w '%{http_code}' -XPOST -H 'Authorization: Bearer wrong' http://"$PROXY":9092/v1/reload)
 [ "$code" = 401 ] && ok "bad token 401" || bad "expected 401, got $code"
