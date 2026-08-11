@@ -5,9 +5,11 @@
 dns:
   enabled: true
   listen: ":53"
-  proxy_ip: "172.31.250.2"
+  proxy_ip: "172.31.250.2"          # overridden at boot to the container IP
+  upstream_resolver: "1.1.1.1:53"   # passthrough zones forward here
   passthrough:
     - "*.internal.corp"
+    - "*.iana.org"                  # forwarded to 1.1.1.1, not intercepted
   records:
     - name: "db.internal.corp"   # inside the passthrough zone: static wins
       type: A

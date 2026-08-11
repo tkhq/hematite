@@ -51,11 +51,19 @@ step 5 "disallowed header stripped"
 body=$(curl -s --cacert "$CA" -H 'X-Tracking: 1' https://httpbin.org/get)
 echo "$body" | grep -qi 'x-tracking' && bad "tracking header reached upstream" || ok "stripped"
 
-step 6 "DNS precedence (static > intercept)"
+step 6 "DNS precedence (static > passthrough > intercept)"
 static=$(dig +short @"$PROXY" db.internal.corp A | head -1)
 [ "$static" = "10.0.0.9" ] && ok "static 10.0.0.9" || bad "static got '$static'"
 intercept=$(dig +short @"$PROXY" anything.example A | head -1)
 [ "$intercept" = "$PROXY" ] && ok "intercept -> proxy" || bad "intercept got '$intercept'"
+# Passthrough: *.iana.org is forwarded to the upstream resolver (1.1.1.1),
+# so the answer is a real public IP, never the proxy IP.
+passthru=$(dig +short @"$PROXY" www.iana.org A | grep -E '^[0-9]+\.' | head -1)
+if [ -n "$passthru" ] && [ "$passthru" != "$PROXY" ]; then
+  ok "passthrough -> $passthru"
+else
+  bad "passthrough got '$passthru' (expected a forwarded public IP)"
+fi
 
 step 7 "CONNECT tunnel -> MITM'd 200"
 code=$(curl -s -o /dev/null -w '%{http_code}' -x http://"$PROXY":8080 --cacert "$CA" https://httpbin.org/get)

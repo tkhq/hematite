@@ -396,10 +396,14 @@ pub fn load_str(
             listen: d.listen.clone().unwrap_or_else(|| ":53".into()),
             // proxy_ip presence + IPv4 validity were checked above.
             proxy_ip: d.proxy_ip.as_ref().unwrap().parse().unwrap(),
+            // Default to a concrete public resolver rather than the spec's
+            // "OS resolver" — inside an intercepted network the OS resolver
+            // may be hematite itself, which would loop. Configurable via
+            // dns.upstream_resolver.
             upstream_resolver: d
                 .upstream_resolver
                 .clone()
-                .unwrap_or_else(|| "8.8.8.8:53".into()),
+                .unwrap_or_else(|| "1.1.1.1:53".into()),
             passthrough: d.passthrough.clone(),
             records: d
                 .records

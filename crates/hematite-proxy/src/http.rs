@@ -1,9 +1,9 @@
-//! Part 05 §1–§4 and §6 — common request handling; the HTTP, HTTPS-MITM,
-//! and tunnel listeners; and failure behavior.
+//! Part 05 §1–§5 and §6 — common request handling; the HTTP, HTTPS-MITM,
+//! and tunnel listeners; WebSocket/SSE streaming; and failure behavior.
 //!
-//! Deviations (documented): hyper canonicalizes header names to lowercase,
-//! so original wire casing of names is not preserved; WebSocket frame
-//! forwarding is not yet implemented (the handshake still runs the pipeline).
+//! Header-name wire casing is preserved end to end via hyper's
+//! `preserve_header_case` on both the inbound server and the upstream
+//! client, with the case map riding on the request parts' extensions.
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{copy_bidirectional, AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 
 use hematite_kernel::audit::{Action, AuditRecord, TunnelGroup};
@@ -69,10 +69,17 @@ where
 {
     let service = service_fn(move |req| handle(req, ctx.clone()));
     let mut builder = auto::Builder::new(TokioExecutor::new());
-    // Keep serving after the client half-closes its write side, so a
-    // request-then-shutdown client still receives the response.
-    builder.http1().half_close(true);
-    let _ = builder.serve_connection(TokioIo::new(io), service).await;
+    builder
+        .http1()
+        // Keep serving after the client half-closes its write side, so a
+        // request-then-shutdown client still receives the response.
+        .half_close(true)
+        // Record the wire casing of header names so it can be reproduced
+        // toward the upstream (Part 01 §1, Part 02 §5).
+        .preserve_header_case(true);
+    // with_upgrades so a WebSocket handshake can switch to byte copy
+    // (Part 05 §5).
+    let _ = builder.serve_connection_with_upgrades(TokioIo::new(io), service).await;
 }
 
 /// Serve the plain-HTTP listener until the socket closes (Part 05 §2, L1).
@@ -287,14 +294,40 @@ fn base_record(
     }
 }
 
+/// A valid WebSocket upgrade handshake (Part 05 §5): GET with
+/// `Upgrade: websocket` and `Connection` listing `upgrade`.
+fn is_websocket(req: &Request<Incoming>) -> bool {
+    if req.method() != hyper::Method::GET {
+        return false;
+    }
+    let upgrade = req
+        .headers()
+        .get(hyper::header::UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("websocket"))
+        .unwrap_or(false);
+    let connection = req
+        .headers()
+        .get(hyper::header::CONNECTION)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.split(',').any(|t| t.trim().eq_ignore_ascii_case("upgrade")))
+        .unwrap_or(false);
+    upgrade && connection
+}
+
 async fn handle(
-    req: Request<Incoming>,
+    mut req: Request<Incoming>,
     ctx: Arc<ConnCtx>,
 ) -> Result<Response<OutBody>, BoxError> {
     let runtime = ctx.state.current();
     let started = Instant::now();
     let mut pending = PendingAudit::new(ctx.sink.clone(), Some(ctx.remote_addr.clone()));
     let method = req.method().as_str().to_string();
+
+    // A WebSocket handshake takes the byte-copy path after the pipeline
+    // approves it; capture the client upgrade future before decomposing.
+    let is_ws = is_websocket(&req);
+    let client_upgrade = if is_ws { Some(hyper::upgrade::on(&mut req)) } else { None };
 
     // Part 05 §1 steps 1–2. A tunnel fixes the upstream to the CONNECT
     // target; the path/query still come from the inner request-target.
@@ -330,7 +363,9 @@ async fn handle(
     // Part 01 §4 — buffer up to the cap; over-cap bodies keep the unread
     // remainder for streaming forward.
     let cap = runtime.max_request_body_bytes;
-    let (_parts, mut incoming) = req.into_parts();
+    // Keep the request parts: their extensions carry hyper's original
+    // header-case map, which the upstream client replays (Part 02 §5).
+    let (mut parts, mut incoming) = req.into_parts();
     let mut buffered: Vec<u8> = Vec::new();
     let mut over_cap = false;
     loop {
@@ -452,10 +487,11 @@ async fn handle(
         }
     };
 
-    // Part 07 §3 — header hygiene (WebSocket preservation is L2).
+    // Part 07 §3 — header hygiene. A WebSocket handshake keeps Upgrade /
+    // Connection so the switch survives to the upstream (Part 05 §5).
     let mut out_headers: Vec<(String, String)> =
         summary.headers.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect();
-    strip_hop_by_hop(&mut out_headers, false);
+    strip_hop_by_hop(&mut out_headers, is_ws);
     if !over_cap {
         // Buffered body forwards with an exact Content-Length re-derived
         // from the (possibly rewritten) bytes (Part 01 §4).
@@ -467,10 +503,6 @@ async fn handle(
     } else {
         format!("{}?{}", summary.path, summary.query)
     };
-    let mut builder = Request::builder().method(summary.method.as_str()).uri(path_and_query);
-    for (name, value) in &out_headers {
-        builder = builder.header(name.as_str(), value.as_str());
-    }
     let out_body: OutBody = if over_cap {
         ChainBody {
             prefix: Some(Bytes::from(buffered)),
@@ -480,7 +512,25 @@ async fn handle(
     } else {
         bytes_body(summary.body.read().to_vec())
     };
-    let upstream_req = match builder.body(out_body) {
+
+    // Rebuild the upstream request on the preserved parts, so their
+    // extensions (hyper's original header-case map) ride along and the
+    // client replays the wire casing of names (Part 02 §5). Body drops to
+    // http/1.1 toward the upstream.
+    let build = (|| -> Result<Request<OutBody>, BoxError> {
+        parts.method = hyper::Method::from_bytes(summary.method.as_bytes())?;
+        parts.uri = path_and_query.parse()?;
+        parts.version = hyper::Version::HTTP_11;
+        let mut headers = hyper::HeaderMap::new();
+        for (name, value) in &out_headers {
+            let n = hyper::header::HeaderName::from_bytes(name.as_bytes())?;
+            let v = hyper::header::HeaderValue::from_bytes(value.as_bytes())?;
+            headers.append(n, v);
+        }
+        parts.headers = headers;
+        Ok(Request::from_parts(parts, out_body))
+    })();
+    let upstream_req = match build {
         Ok(r) => r,
         Err(e) => {
             record.action = Action::Error;
@@ -493,7 +543,7 @@ async fn handle(
     };
 
     // Send; the response-header timeout covers time-to-headers (Part 07 §4).
-    let upstream_response = match send_upstream(
+    let mut upstream_response = match send_upstream(
         stream,
         upstream_req,
         runtime.upstream_response_header_timeout,
@@ -510,6 +560,48 @@ async fn handle(
             return Ok(status_response(StatusCode::BAD_GATEWAY));
         }
     };
+
+    // Part 05 §5 — WebSocket: on an upstream 101, bridge the two upgraded
+    // connections with a bidirectional byte copy. Response transforms do
+    // not run on frames; the audit reflects the handshake result.
+    if is_ws && upstream_response.status() == StatusCode::SWITCHING_PROTOCOLS {
+        let upstream_upgrade = hyper::upgrade::on(&mut upstream_response);
+        if let Some(client_upgrade) = client_upgrade {
+            tokio::spawn(async move {
+                if let (Ok(client), Ok(upstream)) =
+                    (client_upgrade.await, upstream_upgrade.await)
+                {
+                    let mut client = TokioIo::new(client);
+                    let mut upstream = TokioIo::new(upstream);
+                    let _ = copy_bidirectional(&mut client, &mut upstream).await;
+                }
+            });
+        }
+        record.action = Action::Allow;
+        record.status_code = Some(101);
+        record.duration_ms = ms_since(started);
+        pending.emit(&record);
+
+        // Return the upstream's 101 to the client (keep Upgrade/Connection)
+        // so hyper performs the client-side switch.
+        let (mut parts, _body) = upstream_response.into_parts();
+        let mut resp_headers: Vec<(String, String)> = parts
+            .headers
+            .iter()
+            .map(|(n, v)| (n.as_str().to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned()))
+            .collect();
+        strip_hop_by_hop(&mut resp_headers, true);
+        parts.headers.clear();
+        for (name, value) in &resp_headers {
+            if let (Ok(n), Ok(v)) = (
+                hyper::header::HeaderName::from_bytes(name.as_bytes()),
+                hyper::header::HeaderValue::from_bytes(value.as_bytes()),
+            ) {
+                parts.headers.append(n, v);
+            }
+        }
+        return Ok(Response::from_parts(parts, empty_body()));
+    }
 
     // Response path (Part 03 §2) — all v1 transforms are no-ops, but the
     // traces are recorded and Reject/Stub/error semantics hold.
@@ -578,11 +670,17 @@ where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let io = TokioIo::new(stream);
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+    let (mut sender, conn) = hyper::client::conn::http1::Builder::new()
+        // Replay the original header-name casing recorded on the request
+        // parts (Part 02 §5).
+        .preserve_header_case(true)
+        .handshake(io)
         .await
         .map_err(|e| format!("upstream handshake: {e}"))?;
+    // with_upgrades so a 101 hands the upstream socket to `upgrade::on`
+    // for the WebSocket byte copy (Part 05 §5).
     tokio::spawn(async move {
-        let _ = conn.await;
+        let _ = conn.with_upgrades().await;
     });
     match tokio::time::timeout(header_timeout, sender.send_request(req)).await {
         Ok(Ok(resp)) => Ok(resp),
