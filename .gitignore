@@ -2,3 +2,7 @@
 /tests/acceptance/certs/
 /tests/acceptance/secrets/
 .superpowers/
+
+# Working design docs / SDD scratch (kept local, preserved in history)
+docs/superpowers/
+.superpowers/

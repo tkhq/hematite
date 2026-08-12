@@ -34,8 +34,8 @@ vectors — not by review discipline. Concept note: [`../CONCEPT.md`](../CONCEPT
 
 ## Status
 
-v0.1: decisions drafted from the Phase-1 concept note; derived from a
-first-principles study of iron-proxy's data plane (compatibility is a
-non-goal, Part 00 §6). The plain-language/coherency pass is done. Pending
+v0.1: decisions drafted from the Phase-1 concept note; informed by studying
+iron-proxy's data plane, though hematite is its own design and claims no
+compatibility (Part 00 §6). The plain-language/coherency pass is done. Pending
 before v0.2: vector data files extracted from Appendix C and the conformance
 runner.

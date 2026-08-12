@@ -2,8 +2,13 @@ name: ci
 
 on:
   push:
-    branches: ["**"]
+    branches: ["main"]
   pull_request:
+
+# One run per ref: a new push to a PR branch cancels the superseded run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
