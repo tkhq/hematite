@@ -1,0 +1,43 @@
+# Benchmark fixture: two TLS upstreams, both proxies (Tasks 2-3), and a
+# loadgen. Traffic flows over each proxy's CONNECT tunnel listener, so no
+# DNS interception is involved; hostnames resolve via network aliases.
+services:
+  upstream:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/certs:ro
+      - ./www:/www:ro
+    networks:
+      bench:
+        ipv4_address: 172.28.0.10
+        aliases: [upstream.test, denied.test]
+
+  stream:
+    image: python:3.12-slim
+    command: ["python3", "/echo.py"]
+    volumes:
+      - ./echo.py:/echo.py:ro
+      - ./certs:/certs:ro
+    networks:
+      bench:
+        ipv4_address: 172.28.0.11
+        aliases: [stream.test]
+
+  loadgen:
+    build:
+      context: .
+      dockerfile: loadgen.Dockerfile
+    volumes:
+      - ./certs:/certs:ro
+      - ./scripts:/scripts:ro
+      - ./results:/results
+    networks:
+      bench:
+        ipv4_address: 172.28.0.20
+
+networks:
+  bench:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
