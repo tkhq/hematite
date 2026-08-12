@@ -17,11 +17,14 @@
 //! never be bypassed by a pooled connection, but the re-check keeps that
 //! property local and visible instead of depending on reload semantics.
 //!
-//! Known trade-off (documented, accepted for v1): there is no post-send
-//! retry. A reused connection the upstream closed between our readiness
-//! check and the write surfaces as a 502. The 30 s idle cap plus the
-//! `is_closed`/`poll_ready` checkout gate make this rare; before pooling,
-//! sustained load produced mass 502s from ephemeral-port exhaustion instead.
+//! Stale reuse is handled the way Go's `http.Transport` handles it: when a
+//! send on a *reused* connection fails, the handler retries once on a fresh
+//! dial ([`redial`]) — but only for requests that are safe to replay
+//! (buffered body, idempotent method). A reused sender retains the request's
+//! `AllowProof` for exactly that redial; a fresh sender's proof was spent on
+//! its dial, so a fresh connection is never retried. Non-replayable requests
+//! surface the rare stale-reuse race as a 502, bounded by the 30 s idle cap
+//! and the `is_closed`/`poll_ready` checkout gate.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -62,10 +65,25 @@ struct IdleEntry {
 
 /// A checked-out upstream sender. Return it with [`Pool::checkin`] after a
 /// plain (non-upgrade) exchange; drop it on error or after a 101.
+///
+/// A reused sender retains the request's `AllowProof`: the proof authorized
+/// reaching this upstream but was not spent on a dial, so [`redial`] can
+/// redeem it for exactly one fresh connection when the reused one turns out
+/// to be stale. A freshly dialed sender carries no proof — its dial already
+/// consumed it — so a fresh connection can never be redialed (INV-2).
 pub struct PooledSender {
     pub sender: SendRequest<UpstreamBody>,
     peer: IpAddr,
     key: Key,
+    proof: Option<AllowProof>,
+}
+
+impl PooledSender {
+    /// Whether this sender came from the idle pool (a stale-reuse send
+    /// failure on it is eligible for one retry via [`redial`]).
+    pub fn reused(&self) -> bool {
+        self.proof.is_some()
+    }
 }
 
 /// Idle-connection pool. Lives inside a `Runtime`, so a config reload swaps
@@ -83,7 +101,11 @@ impl Pool {
     /// Pop a live idle sender for `key`, dropping expired, closed, guard-
     /// denied, and not-ready entries along the way. LIFO: the most recently
     /// used connection is the least likely to have been closed upstream.
-    fn checkout(&self, key: &Key, runtime: &Runtime) -> Option<PooledSender> {
+    fn checkout(
+        &self,
+        key: &Key,
+        runtime: &Runtime,
+    ) -> Option<(SendRequest<UpstreamBody>, IpAddr)> {
         let mut idle = self.idle.lock().unwrap_or_else(|e| e.into_inner());
         let entries = idle.get_mut(key)?;
         let now = Instant::now();
@@ -98,11 +120,7 @@ impl Pool {
                 // than re-queueing) keeps checkout O(len) and bounded.
                 continue;
             }
-            return Some(PooledSender {
-                sender: entry.sender,
-                peer: entry.peer,
-                key: key.clone(),
-            });
+            return Some((entry.sender, entry.peer));
         }
         None
     }
@@ -159,15 +177,41 @@ pub async fn acquire(
     port: u16,
     scheme_https: bool,
     runtime: &Runtime,
-) -> Result<(PooledSender, bool), DialError> {
+) -> Result<PooledSender, DialError> {
     let key: Key = (host.to_ascii_lowercase(), port, scheme_https);
-    if let Some(pooled) = runtime.pool.checkout(&key, runtime) {
-        // The proof authorized reaching this upstream; the socket it rides
-        // on was proof-gated when it was created. See module docs.
-        let _ = proof;
+    if let Some((sender, peer)) = runtime.pool.checkout(&key, runtime) {
+        // The socket was proof-gated when created; this request's proof is
+        // retained for a possible stale-reuse redial. See PooledSender docs.
         runtime.metrics.inc_dial(DialResult::Reused);
-        return Ok((pooled, true));
+        return Ok(PooledSender {
+            sender,
+            peer,
+            key,
+            proof: Some(proof),
+        });
     }
+    dial_fresh(proof, key, runtime).await
+}
+
+/// The reused connection turned out to be stale: redeem its retained proof
+/// for one fresh dial to the same key. Only a reused sender carries a proof,
+/// so this is callable at most once per request (INV-2 holds by type).
+pub async fn redial(stale: PooledSender, runtime: &Runtime) -> Result<PooledSender, DialError> {
+    let PooledSender { key, proof, .. } = stale;
+    match proof {
+        Some(proof) => dial_fresh(proof, key, runtime).await,
+        None => Err(DialError::Failed(
+            "upstream connection failed (fresh dial; not retried)".into(),
+        )),
+    }
+}
+
+async fn dial_fresh(
+    proof: AllowProof,
+    key: Key,
+    runtime: &Runtime,
+) -> Result<PooledSender, DialError> {
+    let (host, port, scheme_https) = (&key.0, key.1, key.2);
     let (stream, peer) = connect_upstream(proof, host, port, scheme_https, runtime).await?;
     let io = TokioIo::new(stream);
     let (sender, conn) = hyper::client::conn::http1::Builder::new()
@@ -183,5 +227,10 @@ pub async fn acquire(
     tokio::spawn(async move {
         let _ = conn.with_upgrades().await;
     });
-    Ok((PooledSender { sender, peer, key }, false))
+    Ok(PooledSender {
+        sender,
+        peer,
+        key,
+        proof: None,
+    })
 }

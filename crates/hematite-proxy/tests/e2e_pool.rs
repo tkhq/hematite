@@ -112,6 +112,59 @@ async fn sequential_requests_reuse_one_upstream_connection() {
     );
 }
 
+/// Upstream that answers one keep-alive request per connection, then slams
+/// the socket shut shortly after — manufacturing the stale-reuse race: the
+/// proxy pools the connection, and by the next request it is dead or dying.
+async fn spawn_flaky_upstream(close_after: std::time::Duration) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                // Read until the end of the request headers, answer with a
+                // keep-alive response, linger briefly, then close abruptly.
+                let mut buf = [0u8; 4096];
+                let mut seen = Vec::new();
+                while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut buf).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => seen.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\
+                          connection: keep-alive\r\n\r\nok",
+                    )
+                    .await;
+                tokio::time::sleep(close_after).await;
+                drop(stream);
+            });
+        }
+    });
+    port
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stale_reused_connection_is_retried_for_idempotent_requests() {
+    let upstream_port = spawn_flaky_upstream(std::time::Duration::from_millis(5)).await;
+    let proxy_port = spawn_proxy(Guard::new(&[]).unwrap()).await;
+
+    // Every iteration pools a connection the upstream kills ~5ms later.
+    // Some checkouts observe the death (fresh dial), some race it (send
+    // fails on the reused sender). With single-retry replay, a GET must
+    // never surface a 502 either way.
+    for i in 0..30 {
+        let response = one_request(proxy_port, upstream_port).await;
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "iteration {i} got: {response}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(4)).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn guard_is_rechecked_on_reuse() {
     let (upstream_port, conns) = spawn_counting_upstream().await;

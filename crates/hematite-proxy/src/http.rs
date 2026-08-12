@@ -401,7 +401,7 @@ async fn handle(
     let cap = runtime.max_request_body_bytes;
     // Keep the request parts: their extensions carry hyper's original
     // header-case map, which the upstream client replays (Part 02 §5).
-    let (mut parts, mut incoming) = req.into_parts();
+    let (parts, mut incoming) = req.into_parts();
     let mut buffered: Vec<u8> = Vec::new();
     let mut over_cap = false;
     loop {
@@ -512,32 +512,31 @@ async fn handle(
         host = %dial_host,
         port = dial_port,
     );
-    let (mut pooled, _reused) =
-        match pool::acquire(proof, &dial_host, dial_port, ctx.scheme_https, &runtime)
-            .instrument(dial_span)
-            .await
-        {
-            Ok(p) => p,
-            Err(DialError::Denied(denial)) => {
-                record.action = Action::Reject;
-                record.rejected_by = Some("guard".into());
-                record.status_code = Some(502);
-                record.guard = Some(denial);
-                record.duration_ms = ms_since(started);
-                record_outcome(&span, &record);
-                pending.emit(&record);
-                return Ok(status_response(StatusCode::BAD_GATEWAY));
-            }
-            Err(DialError::Failed(message)) => {
-                record.action = Action::Error;
-                record.status_code = Some(502);
-                record.error = Some(message);
-                record.duration_ms = ms_since(started);
-                record_outcome(&span, &record);
-                pending.emit(&record);
-                return Ok(status_response(StatusCode::BAD_GATEWAY));
-            }
-        };
+    let mut pooled = match pool::acquire(proof, &dial_host, dial_port, ctx.scheme_https, &runtime)
+        .instrument(dial_span)
+        .await
+    {
+        Ok(p) => p,
+        Err(DialError::Denied(denial)) => {
+            record.action = Action::Reject;
+            record.rejected_by = Some("guard".into());
+            record.status_code = Some(502);
+            record.guard = Some(denial);
+            record.duration_ms = ms_since(started);
+            record_outcome(&span, &record);
+            pending.emit(&record);
+            return Ok(status_response(StatusCode::BAD_GATEWAY));
+        }
+        Err(DialError::Failed(message)) => {
+            record.action = Action::Error;
+            record.status_code = Some(502);
+            record.error = Some(message);
+            record.duration_ms = ms_since(started);
+            record_outcome(&span, &record);
+            pending.emit(&record);
+            return Ok(status_response(StatusCode::BAD_GATEWAY));
+        }
+    };
 
     // Part 07 §3 — header hygiene. A WebSocket handshake keeps Upgrade /
     // Connection so the switch survives to the upstream (Part 05 §5).
@@ -578,34 +577,43 @@ async fn handle(
     } else {
         format!("{}?{}", summary.path, summary.query)
     };
-    let out_body: OutBody = if over_cap {
-        ChainBody {
+    // A buffered body can be replayed byte-for-byte; a streamed (over-cap)
+    // body is consumed by the first send and cannot.
+    let buffered_bytes: Option<Bytes> = if over_cap {
+        None
+    } else {
+        Some(Bytes::from(summary.body.read().to_vec()))
+    };
+    let first_body: OutBody = match &buffered_bytes {
+        Some(bytes) => Full::new(bytes.clone()).map_err(|e| match e {}).boxed(),
+        None => ChainBody {
             prefix: Some(Bytes::from(buffered)),
             inner: Box::pin(incoming),
         }
-        .boxed()
-    } else {
-        bytes_body(summary.body.read().to_vec())
+        .boxed(),
     };
 
-    // Rebuild the upstream request on the preserved parts, so their
-    // extensions (hyper's original header-case map) ride along and the
+    // Build the upstream request from scratch each attempt, carrying the
+    // preserved parts' extensions (hyper's original header-case map) so the
     // client replays the wire casing of names (Part 02 §5). Body drops to
     // http/1.1 toward the upstream.
-    let build = (|| -> Result<Request<OutBody>, BoxError> {
-        parts.method = hyper::Method::from_bytes(summary.method.as_bytes())?;
-        parts.uri = path_and_query.parse()?;
-        parts.version = hyper::Version::HTTP_11;
+    let extensions = parts.extensions.clone();
+    let build_request = |body: OutBody| -> Result<Request<OutBody>, BoxError> {
+        let mut req = Request::new(body);
+        *req.method_mut() = hyper::Method::from_bytes(summary.method.as_bytes())?;
+        *req.uri_mut() = path_and_query.parse()?;
+        *req.version_mut() = hyper::Version::HTTP_11;
         let mut headers = hyper::HeaderMap::new();
         for (name, value) in &out_headers {
             let n = hyper::header::HeaderName::from_bytes(name.as_bytes())?;
             let v = hyper::header::HeaderValue::from_bytes(value.as_bytes())?;
             headers.append(n, v);
         }
-        parts.headers = headers;
-        Ok(Request::from_parts(parts, out_body))
-    })();
-    let upstream_req = match build {
+        *req.headers_mut() = headers;
+        *req.extensions_mut() = extensions.clone();
+        Ok(req)
+    };
+    let upstream_req = match build_request(first_body) {
         Ok(r) => r,
         Err(e) => {
             record.action = Action::Error;
@@ -618,17 +626,95 @@ async fn handle(
         }
     };
 
+    // Safe to replay on a stale reused connection: the body is buffered and
+    // the method is idempotent-safe (Go's http.Transport rule). A failed
+    // POST is never replayed — the upstream may have executed it.
+    let replay_safe = buffered_bytes.is_some()
+        && matches!(
+            summary.method.as_str(),
+            "GET" | "HEAD" | "OPTIONS" | "TRACE"
+        );
+
     // Send; the response-header timeout covers time-to-headers (Part 07 §4).
     let upstream_span = tracing::info_span!(parent: &span, "upstream");
-    let mut upstream_response = match send_upstream(
+    let first_attempt = send_upstream(
         &mut pooled,
         upstream_req,
         runtime.upstream_response_header_timeout,
     )
-    .instrument(upstream_span)
-    .await
-    {
+    .instrument(upstream_span.clone())
+    .await;
+    let mut upstream_response = match first_attempt {
         Ok(r) => r,
+        Err(first_err) if replay_safe && pooled.reused() => {
+            // Stale reuse: the pooled connection died between checkout and
+            // write. Redeem the retained proof for one fresh dial and replay
+            // the identical request (pool module docs).
+            let retried = async {
+                let fresh = pool::redial(pooled, &runtime).await?;
+                Ok::<_, DialError>(fresh)
+            }
+            .await;
+            match retried {
+                Ok(fresh) => {
+                    pooled = fresh;
+                    let body = buffered_bytes
+                        .as_ref()
+                        .map(|b| Full::new(b.clone()).map_err(|e| match e {}).boxed())
+                        .expect("replay_safe implies buffered body");
+                    let req = match build_request(body) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            record.action = Action::Error;
+                            record.status_code = Some(502);
+                            record.error = Some(format!("rebuilding upstream request: {e}"));
+                            record.duration_ms = ms_since(started);
+                            record_outcome(&span, &record);
+                            pending.emit(&record);
+                            return Ok(status_response(StatusCode::BAD_GATEWAY));
+                        }
+                    };
+                    match send_upstream(&mut pooled, req, runtime.upstream_response_header_timeout)
+                        .instrument(upstream_span)
+                        .await
+                    {
+                        Ok(r) => r,
+                        Err(second_err) => {
+                            record.action = Action::Error;
+                            record.status_code = Some(502);
+                            record.error = Some(format!(
+                                "stale reuse ({first_err}); retry failed: {second_err}"
+                            ));
+                            record.duration_ms = ms_since(started);
+                            record_outcome(&span, &record);
+                            pending.emit(&record);
+                            return Ok(status_response(StatusCode::BAD_GATEWAY));
+                        }
+                    }
+                }
+                Err(DialError::Denied(denial)) => {
+                    record.action = Action::Reject;
+                    record.rejected_by = Some("guard".into());
+                    record.status_code = Some(502);
+                    record.guard = Some(denial);
+                    record.duration_ms = ms_since(started);
+                    record_outcome(&span, &record);
+                    pending.emit(&record);
+                    return Ok(status_response(StatusCode::BAD_GATEWAY));
+                }
+                Err(DialError::Failed(message)) => {
+                    record.action = Action::Error;
+                    record.status_code = Some(502);
+                    record.error = Some(format!(
+                        "stale reuse ({first_err}); redial failed: {message}"
+                    ));
+                    record.duration_ms = ms_since(started);
+                    record_outcome(&span, &record);
+                    pending.emit(&record);
+                    return Ok(status_response(StatusCode::BAD_GATEWAY));
+                }
+            }
+        }
         Err(message) => {
             record.action = Action::Error;
             record.status_code = Some(502);
