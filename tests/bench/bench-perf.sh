@@ -9,6 +9,16 @@ DUR=${DUR:-30s}; RATE=${RATE:-400}; WORKERS=${WORKERS:-64}; ITER=${ITER:-3}
 if [[ "${QUICK:-}" == "1" ]]; then DUR=3s; RATE=50; WORKERS=8; ITER=1; fi
 mkdir -p results
 
+CUR_SAMPLER=""
+cleanup() {
+  if [[ -n "$CUR_SAMPLER" ]]; then
+    kill "$CUR_SAMPLER" 2>/dev/null
+    wait "$CUR_SAMPLER" 2>/dev/null
+  fi
+  return 0
+}
+trap cleanup EXIT
+
 # attack <proxy-url-or-empty> <outfile> <vegeta rate args...>
 attack() {
   local proxy=$1 out=$2; shift 2
@@ -44,9 +54,9 @@ measured() {
       local rate_args="-rate $RATE"
       [[ "$kind" == max ]] && rate_args="-rate 0 -max-workers $WORKERS"
       local spid=""
-      if [[ -n "$cid" ]]; then sample "$cid" "stats-$target-$kind-$i.jsonl" & spid=$!; fi
+      if [[ -n "$cid" ]]; then sample "$cid" "stats-$target-$kind-$i.jsonl" & spid=$!; CUR_SAMPLER=$spid; fi
       attack "$proxy" "perf-$target-$kind-$i.json" $rate_args
-      if [[ -n "$spid" ]]; then kill "$spid" 2>/dev/null || true; wait "$spid" 2>/dev/null || true; fi
+      if [[ -n "$spid" ]]; then kill "$spid" 2>/dev/null || true; wait "$spid" 2>/dev/null || true; CUR_SAMPLER=""; fi
     done
   done
 }
