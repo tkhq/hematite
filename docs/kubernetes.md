@@ -23,7 +23,7 @@ helm install hematite deploy/chart/hematite -f my-values.yaml
 
 The chart deploys one hematite Deployment and Service per namespace. At
 minimum, `values.config` must include an `allowlist` transform with at least
-one domain or CIDR — hematite refuses to start on an empty allowlist. The
+one domain or CIDR; hematite refuses to start on an empty allowlist. The
 chart's default `values.config` allowlists only `example.invalid` (a
 reserved-for-testing name that resolves nowhere), so a default install boots
 but egresses nothing. Replace `domains` with your real allowlist before use.
@@ -32,7 +32,7 @@ but egresses nothing. Replace `domains` with your real allowlist before use.
 
 The https and tunnel listeners require a CA. The Secret must have two keys:
 `ca.crt` (PEM certificate) and `ca.key` (PEM private key in PKCS#8 ECDSA
-P-256 — the only format hematite's TLS library accepts).
+P-256, the only format hematite's TLS library accepts).
 
 For dev or CI, `hack/gen-ca.sh` mints a throwaway CA and creates the Secret
 in one step:
@@ -52,7 +52,7 @@ tls:
 
 For real deployments, bring a CA managed by your PKI and create the Secret
 yourself. The `existingSecret` field is always required when `service.https`
-or `service.tunnel` is enabled — the chart does not mint a CA.
+or `service.tunnel` is enabled; the chart does not mint a CA.
 
 ### Management secret
 
@@ -150,8 +150,8 @@ observability:
 ```
 
 Point your Prometheus or metrics collector at `<pod-ip>:9092/metrics`. The
-exposition contains only aggregate counters and histograms — no per-host
-labels, no per-request identifiers. A locked-down client that can reach the
+exposition contains only aggregate counters and histograms, with no per-host
+labels and no per-request identifiers. A locked-down client that can reach the
 management Service port can scrape `/metrics` without a token.
 
 The management Service SHOULD NOT be exposed to untrusted workloads: while
@@ -176,12 +176,12 @@ integration test points `SSL_CERT_FILE` at `/etc/hematite/tls/ca.crt`
 (the TLS Secret mount) so the MITM CA doubles as the upstream trust anchor.
 
 `hostAliases` adds entries to `/etc/hosts` in the hematite pod. Use it to
-route test traffic to a pinned Service IP rather than the real internet.
+route test traffic to a pinned Service IP, keeping it off the real internet.
 
 For secrets sourced from files (the `secrets` transform's `type: file`
 source), mount them with `extraVolumes`/`extraVolumeMounts`. Mount at
-`/run/hematite-secrets/` rather than `/run/secrets/`: on Debian-based images,
-`/run/secrets` conflicts with the service-account token projection.
+`/run/hematite-secrets/`; on Debian-based images, `/run/secrets/` collides with
+the service-account token projection.
 
 ```yaml
 extraVolumes:
@@ -226,8 +226,8 @@ UDP+TCP to `kube-system/kube-dns`. All other egress is denied.
 
 **CNI caveat.** NetworkPolicy enforcement depends entirely on the CNI. Stock
 k3s includes Flannel with the embedded Network Policy controller, which
-enforces this policy. A CNI that ignores NetworkPolicy resources — or a
-cluster running without any policy controller — will silently not enforce it:
+enforces this policy. A CNI that ignores NetworkPolicy resources, or a
+cluster running without any policy controller, will silently not enforce it:
 pods appear to be locked down but can reach anything. Confirm your CNI
 enforces NetworkPolicy before relying on this for security.
 
@@ -264,7 +264,7 @@ install it depends on the runtime:
 Mount the CA from a ConfigMap or Secret and set the variable from an
 initContainer or directly in the pod environment.
 
-This approach is cooperative — a workload that ignores the proxy env vars
+This approach is cooperative: a workload that ignores the proxy env vars
 bypasses hematite.
 
 ### Transparent DNS
@@ -288,7 +288,7 @@ dnsConfig:
 `service.clusterIP` must be set in your values for this to work: the
 `dnsConfig.nameservers` entry must match the stable Service IP exactly.
 
-DNS steering is still cooperative at the socket layer — a workload can
+DNS steering is still cooperative at the socket layer: a workload can
 hardcode an IP or use DoH to bypass it. Combine it with `egressLockdown` to
 make hematite the only reachable egress path.
 
@@ -297,8 +297,8 @@ make hematite the only reachable egress path.
 ## Enforcement
 
 **Important:** In Kubernetes, an empty `podSelector` (`{}`) selects **every**
-pod in the namespace — including hematite itself, which would block its own
-upstream egress. `egressLockdown.podSelector` must always be set to a
+pod in the namespace (including hematite itself, which would block its own
+upstream egress). `egressLockdown.podSelector` must always be set to a
 non-empty selector that targets only your sandbox pods. The chart will refuse
 to render if it is left empty.
 
@@ -314,7 +314,7 @@ egressLockdown:
 The resulting NetworkPolicy applies a default-deny egress rule to pods
 matching that selector, then adds allows for hematite's enabled listener
 ports and for cluster DNS. Without this, steering via proxy env vars or DNS is
-advisory — a workload that routes around hematite can reach the internet
+advisory: a workload that routes around hematite can reach the internet
 directly.
 
 `egressLockdown` acts only on pods in the same namespace as the hematite
@@ -323,7 +323,7 @@ namespace.
 
 **Note:** If `service.management.enabled` is true, the NetworkPolicy also
 allows locked-down pods to reach the management port. `GET /metrics` is
-auth-exempt on this port (aggregates only, no per-host data — see the metrics
+auth-exempt on this port (aggregates only, no per-host data; see the metrics
 cardinality rationale in [`docs/configuration.md`](configuration.md#observabilitymetrics)).
 Consider whether exposing the management port to locked-down pods is
 appropriate for your threat model before enabling both together.

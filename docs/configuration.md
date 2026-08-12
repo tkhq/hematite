@@ -6,16 +6,16 @@ hematite is configured by a single YAML file passed with `-config`:
 hematite -config /etc/hematite/hematite.yaml
 ```
 
-The file is validated at boot: any error — an unknown key, a bad glob, a
-missing required field — stops startup rather than surfacing at request
-time. This reference describes every key. For the normative definitions see
+The file is validated at boot: any error (an unknown key, a bad glob, a
+missing required field) stops startup immediately, before any request is
+served. This reference describes every key. For the normative definitions see
 [`spec/09-config.md`](../spec/09-config.md) and the per-feature parts.
 
 - [A complete example](#a-complete-example)
 - [Load order and environment overrides](#load-order-and-environment-overrides)
 - [Conformance levels: which listeners run](#conformance-levels-which-listeners-run)
 - [`proxy`](#proxy) · [`tls`](#tls) · [`dns`](#dns) · [`management`](#management) · [`log`](#log) · [`observability`](#observability)
-- [`transforms`](#transforms) — the policy pipeline
+- [`transforms`](#transforms): the policy pipeline
 - [Rules and matching](#rules-and-matching)
 - [Reloading](#reloading)
 
@@ -32,7 +32,7 @@ dns:
   proxy_ip: "172.20.0.2"
   upstream_resolver: "1.1.1.1:53"
   passthrough:
-    - "*.internal.corp"          # forwarded upstream, not intercepted
+    - "*.internal.corp"          # forwarded upstream (bypasses interception)
   records:
     - name: "db.internal.corp"   # a static answer (beats passthrough)
       type: A
@@ -135,7 +135,7 @@ the dotted config path, uppercased and joined with `_`, prefixed with
 Overridable keys: everything under `dns`, `proxy`, `tls`, `management`,
 `log`, and `observability` except the list/structured fields (`dns.passthrough`,
 `dns.records`, `proxy.upstream_deny_cidrs`, and the `transforms` list). Secret
-**values** are never set in config or overrides — only the *name* of the env
+**values** are never set in config or overrides; only the *name* of the env
 var or the file path is configured (see [`secrets`](#secrets)).
 
 ---
@@ -154,7 +154,7 @@ that section is present:
 
 Practically:
 
-- A minimal config with just an `allowlist` transform is valid — it serves
+- A minimal config with just an `allowlist` transform is valid and serves
   plain HTTP only.
 - `https_listen` and `tunnel_listen` are **off unless set**. Setting
   `https_listen` requires a `tls` block.
@@ -178,14 +178,14 @@ Listener addresses and upstream behavior.
 | `max_response_body_bytes` | integer | `0` (uncapped) | response-body buffer cap |
 | `upstream_response_header_timeout` | duration | `30s` | time-to-first-byte from upstream → 502 |
 | `upstream_deny_cidrs` | list | metadata + loopback | the guard (see below) |
-| `http_proxy` / `https_proxy` / `no_proxy` | string | — | **accepted but not yet wired** (egress chaining is planned) |
+| `http_proxy` / `https_proxy` / `no_proxy` | string | none | **accepted but not yet wired** (egress chaining is planned) |
 
 Addresses are `host:port`; a leading `:` binds all interfaces (`:80` →
 `0.0.0.0:80`). Durations are bare seconds or `<n>ms`/`<n>s`/`<n>m`.
 
 **The guard (`upstream_deny_cidrs`).** After a request passes policy,
 hematite resolves the destination and checks the *actual* IP it is about to
-dial against this deny list — closing SSRF and DNS-rebinding (an allowlisted
+dial against this deny list, closing SSRF and DNS-rebinding (an allowlisted
 name whose record points at cloud metadata still fails at the socket).
 
 - **Absent** → the default deny set: `169.254.169.254/32`, `fd00:ec2::254/128`,
@@ -194,7 +194,8 @@ name whose record points at cloud metadata still fails at the socket).
 - **Explicitly empty** (`upstream_deny_cidrs: []`) → the guard is disabled.
   This is distinct from absent.
 - A denied dial returns 502 and audits as a policy denial (`rejected_by:
-  "guard"`), not an error.
+  "guard"`). The audit category is a denial; transport failures use their
+  own category.
 
 ---
 
@@ -206,8 +207,8 @@ clients that trust the CA accept the MITM.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `ca_cert` | path | — | PEM CA certificate (`CA:TRUE`) |
-| `ca_key` | path | — | PEM CA private key (PKCS#8) |
+| `ca_cert` | path | required | PEM CA certificate (`CA:TRUE`) |
+| `ca_key` | path | required | PEM CA private key (PKCS#8) |
 | `cert_cache_size` | integer | `1000` | per-hostname leaf LRU cache |
 | `leaf_cert_expiry_hours` | integer | `72` | minted-leaf lifetime |
 
@@ -229,9 +230,9 @@ on the listeners.
 |---|---|---|---|
 | `enabled` | bool | `true` | within a present `dns:` block |
 | `listen` | address | `:53` | UDP and TCP are both served |
-| `proxy_ip` | IPv4 | — | **required** when enabled; the intercept answer |
+| `proxy_ip` | IPv4 | required | **required** when enabled; the intercept answer |
 | `upstream_resolver` | address | `1.1.1.1:53` | where passthrough queries go |
-| `passthrough` | list of globs | `[]` | names forwarded upstream instead of intercepted |
+| `passthrough` | list of globs | `[]` | names forwarded upstream, bypassing interception |
 | `records` | list | `[]` | static `A`/`CNAME` answers |
 
 Resolution precedence for each query: **static records** (exact name) >
@@ -239,9 +240,9 @@ Resolution precedence for each query: **static records** (exact name) >
 (answer `A` → `proxy_ip`). `AAAA` and other types for an intercepted name
 return an empty `NOERROR` so dual-stack clients fall back to the A record.
 
-`upstream_resolver` defaults to a concrete public resolver, not the host's OS
-resolver: inside an intercepted network the OS resolver may point back at
-hematite and loop.
+`upstream_resolver` defaults to a concrete public resolver (`1.1.1.1:53`).
+Inside an intercepted network the host's OS resolver may point back at
+hematite and loop, so a fixed external resolver is the safe default.
 
 Static records:
 
@@ -254,9 +255,9 @@ records:
 A `CNAME` is returned as-is; the server does not chase the target (the client
 re-queries the canonical name).
 
-> DNS steering is cooperative — a workload can hardcode IPs or use DoH to
-> bypass it. Making the boundary unavoidable (nftables/TPROXY) is the
-> deployment's job, not hematite's.
+> DNS steering is cooperative: a workload can hardcode IPs or use DoH to
+> bypass it. Making the boundary unavoidable (nftables/TPROXY) is a
+> deployment responsibility, outside hematite's scope.
 
 ---
 
@@ -298,7 +299,7 @@ logs, and optional OTLP trace export.
 
 When `enabled` is `true` (the default), `GET /metrics` on the management port
 serves a Prometheus text exposition. When `false`, `GET /metrics` returns 404.
-Requires `management.listen` to be set — there is no standalone metrics port.
+Requires `management.listen` to be set; there is no standalone metrics port.
 
 Metric counters survive a config reload; the registry is preserved across the
 hot swap.
@@ -316,7 +317,7 @@ hot swap.
 | `hematite_secrets_swaps_total` | counter | `result` (`swapped`/`missing-required`/`source-error`). No secret-name label. |
 | `hematite_config_reloads_total` | counter | `result` (`ok`/`error`) |
 
-All label values are drawn from closed enums or a fixed transform list —
+All label values are drawn from closed enums or a fixed transform list, so
 cardinality is bounded. Per-host labels are deliberately absent: they would be
 unbounded in cardinality and would leak allowlist traffic patterns through an
 unauthenticated endpoint. Per-host data lives in the audit stream (Part 08).
@@ -341,18 +342,18 @@ are never interleaved.
 | Key | Type | Default | Env override |
 |---|---|---|---|
 | `enabled` | bool | `false` | `HEMATITE_OBSERVABILITY_OTLP_ENABLED` |
-| `endpoint` | URL | — | `HEMATITE_OBSERVABILITY_OTLP_ENDPOINT` |
+| `endpoint` | URL | required when enabled | `HEMATITE_OBSERVABILITY_OTLP_ENDPOINT` |
 | `sample_ratio` | float | `1.0` | `HEMATITE_OBSERVABILITY_OTLP_SAMPLE_RATIO` |
 | `service_name` | string | `hematite` | `HEMATITE_OBSERVABILITY_OTLP_SERVICE_NAME` |
 
-OTLP trace export is off by default. When enabled, `endpoint` is required —
+OTLP trace export is off by default. When enabled, `endpoint` is required:
 boot will fail without it. `endpoint` is the OTLP/HTTP base URL (e.g.
 `http://otel-collector:4318`); the exporter appends `/v1/traces`.
 
 `sample_ratio` is a head-sampling probability in `[0.0, 1.0]`. `1.0` samples
 every request; `0.0` samples nothing. Values outside this range fail at boot.
 
-hematite always creates fresh root spans — it never reads an incoming
+hematite always creates fresh root spans. It never reads an incoming
 `traceparent` header and never injects one into upstream requests. This is by
 design: the client is untrusted, and forged trace context must not bias
 operator telemetry.
@@ -371,7 +372,7 @@ request, reject it, or serve a canned response. Order is significant and
 hematite never reorders it. v1 defines exactly five transforms; naming any
 other fails validation.
 
-An `allowlist` transform is **required** — a config without one fails to
+An `allowlist` transform is **required**. A config without one fails to
 load, because default-deny is structural.
 
 ### `allowlist`
@@ -388,7 +389,7 @@ rejects with 403.
 ```
 
 At least one of `domains`/`cidrs` must be non-empty. With `warn: true`, a
-would-be rejection is allowed through and annotated instead (audit only) —
+would-be rejection is allowed through and annotated instead (audit only),
 useful for staging a new policy.
 
 ### `annotate`
@@ -404,7 +405,7 @@ to enrich records with request IDs, trace headers, etc.
         headers: ["x-request-id"]      # literal names only
 ```
 
-Captured values land in the log in plain text — never annotate headers
+Captured values land in the log in plain text. Never annotate headers
 holding real secrets (proxy tokens are fine). A repeated header records its
 first occurrence.
 
@@ -420,7 +421,7 @@ rejects; response bodies are not captured).
     rules: [{ host: "api.anthropic.com", methods: ["POST"], paths: ["/v1/messages"] }]
 ```
 
-`rules` is **required and non-empty** — capture is opt-in per destination,
+`rules` is **required and non-empty**: capture is opt-in per destination,
 never global.
 
 ### `secrets` (L3)
@@ -446,14 +447,14 @@ in any log, audit record, or error.
 Each secret replaces every occurrence of `proxy_value` in the opted-in
 locations with the resolved secret:
 
-- **`match_headers`** — a list of header-name patterns, or `[]`/absent for
+- **`match_headers`**: a list of header-name patterns, or `[]`/absent for
   all headers. A valid `Authorization: Basic <b64>` value is decoded,
   swapped, and re-encoded.
-- **`match_query`** / **`match_path`** — off by default (they leak into
+- **`match_query`** / **`match_path`**: off by default (they leak into
   access logs). When `match_path` is set, `proxy_value` must be RFC 3986
   unreserved-only.
-- **`match_body`** — byte-level replace in the buffered body.
-- **`require: true`** — if the rules match but no proxy token was present (or
+- **`match_body`**: byte-level replace in the buffered body.
+- **`require: true`**: if the rules match but no proxy token was present (or
   the source can't be resolved), the request is rejected. This stops a
   compromised workload from bringing its own credentials.
 
@@ -494,7 +495,7 @@ Many transforms (and the DNS server) select requests with the same **rule**
 shape:
 
 ```yaml
-- host: "*.example.com"        # domain glob OR CIDR — required
+- host: "*.example.com"        # domain glob OR CIDR (required)
   methods: ["POST", "PUT"]     # optional; absent = any method
   paths: ["/v1/*"]             # optional; absent = any path
 ```
@@ -505,15 +506,16 @@ any rule matches. A present-but-empty `rules: []` is a validation error;
 "match everything" is expressed by omitting the key where a transform allows
 it (e.g. `header_allowlist`).
 
-- **Domain globs** — case-insensitive. `*` is only valid as the leading
+- **Domain globs**: case-insensitive. `*` is only valid as the leading
   label: `*.example.com` matches `example.com` and any subdomain depth. A
   pattern with no `*` matches exactly.
-- **CIDRs** — match only IP-literal hosts inside the prefix (never
-  hostnames). A prefix length is required (`10.0.0.0/8`, not `10.0.0.1`).
-- **Path globs** — case-sensitive, matched against the raw (percent-encoded)
+- **CIDRs**: match only IP-literal hosts inside the prefix (never
+  hostnames). A prefix length is required: write `10.0.0.0/8`. A bare host
+  address like `10.0.0.1` is rejected.
+- **Path globs**: case-sensitive, matched against the raw (percent-encoded)
   path. `*` matches any run of characters including `/`. No `**`, `?`, or
   character classes.
-- **Header-name patterns** — a literal name (case-insensitive), or a
+- **Header-name patterns**: a literal name (case-insensitive), or a
   slash-delimited regex (`/^x-.*-key$/`, RE2-class, case-insensitive).
 
 ---

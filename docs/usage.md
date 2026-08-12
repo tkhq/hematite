@@ -58,8 +58,8 @@ host, point `/etc/resolv.conf` at it.)
 ### 3. Trust the CA in the workload
 
 So the workload accepts the minted leaves, install `ca.crt` in its trust
-store — e.g. mount it and run `update-ca-certificates`, or pass
-`--cacert ca.crt` / `NODE_EXTRA_CA_CERTS` / `REQUESTS_CA_BUNDLE` per tool.
+store (e.g. mount it and run `update-ca-certificates`, or pass
+`--cacert ca.crt` / `NODE_EXTRA_CA_CERTS` / `REQUESTS_CA_BUNDLE` per tool).
 
 If hematite dials TLS upstreams that use a **private** CA, that CA must also
 be in **hematite's** system trust store, since upstream connections are
@@ -67,12 +67,13 @@ verified against the system roots.
 
 ### 4. (Optional) tunnel clients
 
-Clients that use an explicit proxy instead of DNS steering can point at
-`tunnel_listen` with `CONNECT` (`curl -x http://hematite:8080 …`) or SOCKS5.
+Clients configured with an explicit proxy can point at `tunnel_listen` with
+`CONNECT` (`curl -x http://hematite:8080 …`) or SOCKS5. DNS steering is not
+required for this path.
 
 ### Making the boundary unavoidable
 
-DNS steering is cooperative — a workload can hardcode IPs or use DoH. To make
+DNS steering is cooperative: a workload can hardcode IPs or use DoH. To make
 the boundary mandatory, force all egress through hematite at the network
 layer (nftables/TPROXY, a locked-down container network, etc.). hematite is a
 userspace boundary and does not enforce this itself.
@@ -91,7 +92,7 @@ rejected (`422`) and the running config keeps serving.
 
 ## Reading the audit log
 
-One JSON object per request on stderr — action, status, timing, and a trace
+One JSON object per request on stderr: action, status, timing, and a trace
 of every transform that ran. For example:
 
 ```json
@@ -106,7 +107,7 @@ Records conform to [`spec/schema/audit-record.schema.json`](../spec/schema/audit
 
 [`tests/acceptance`](../tests/acceptance) is a runnable docker-compose harness
 (proxy + a stand-in upstream + a DNS-steered client) that exercises the whole
-boundary — allow/deny, secret swap, the guard, tunnels, DNS precedence, and
+boundary: allow/deny, secret swap, the guard, tunnels, DNS precedence, and
 reload:
 
 ```sh
