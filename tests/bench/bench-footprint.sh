@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Footprint suite: image size, binary size, cold start (container StartedAt
 # -> first successful proxied 200), idle RSS after 10s of no traffic.
+#
+# cold_start_ms subtracts the Docker daemon's StartedAt clock from the
+# container's wall clock, so host/VM clock skew (e.g. Docker Desktop) can
+# bias the value by tens of ms.
 set -euo pipefail
 cd "$(dirname "$0")"
 mkdir -p results
@@ -15,18 +19,37 @@ bin_path() {
 tmp=results/footprint-rows.jsonl
 : > "$tmp"
 
+poller=
+
+# Kill the background poller on exit so a failed restart never orphans it.
+cleanup() {
+  if [ -n "$poller" ]; then
+    kill "$poller" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
 for t in hematite iron; do
   cid=$(docker compose ps -q "$t")
   img=$(docker inspect -f '{{.Image}}' "$cid")
   image_bytes=$(docker image inspect -f '{{.Size}}' "$img")
   binary_bytes=$(docker compose exec -T "$t" sh -c "stat -c %s $(bin_path "$t")" | tr -d '[:space:]')
 
-  # Cold start: poller (in-network, 10ms resolution) races the restart.
+  # Cold start: poller (in-network, ~50ms resolution) races the restart.
   docker compose exec -T loadgen python3 /scripts/poll.py "$t:8080" > "results/cold-$t.txt" &
   poller=$!
   sleep 0.5
-  docker compose restart "$t" >/dev/null
-  wait "$poller"
+  if ! docker compose restart "$t" >/dev/null; then
+    echo "bench: docker compose restart $t failed" >&2
+    exit 1
+  fi
+  if ! wait "$poller"; then
+    exit_code=$?
+    echo "bench: poller exited with code $exit_code for $t (deadline exceeded?)" >&2
+    exit 1
+  fi
+  poller=
+
   first_ok_ms=$(tr -d '[:space:]' < "results/cold-$t.txt")
   cid=$(docker compose ps -q "$t")
   started=$(docker inspect -f '{{.State.StartedAt}}' "$cid")
