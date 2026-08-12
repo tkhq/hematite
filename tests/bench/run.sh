@@ -17,10 +17,8 @@ mkdir -p results
 runsuite() { # runsuite <name> <command...>
   local name=$1; shift
   echo "=== suite: $name ==="
-  set +e
   "$@"
   local rc=$?
-  set -e
   if [[ $rc -eq 0 ]]; then
     echo "$name: ok" >> results/suite-status.txt
   else
@@ -55,9 +53,14 @@ fi
 if [[ "$SUITE" == all || "$SUITE" == conformance ]]; then
   docker compose logs hematite > results/hematite-preconf.log 2>&1
   HEMATITE_CONFIG=hematite-conf.yaml docker compose up -d --force-recreate hematite
-  wait_ready hematite
-  runsuite conformance-hematite ./conformance.sh hematite
-  runsuite conformance-iron     ./conformance.sh iron
+  if ! wait_ready hematite; then
+    echo "ERROR: hematite did not become ready after config reload; skipping conformance suites" >&2
+    echo "conformance-hematite: ERRORED" >> results/suite-status.txt
+    echo "conformance-iron: ERRORED"     >> results/suite-status.txt
+  else
+    runsuite conformance-hematite ./conformance.sh hematite
+    runsuite conformance-iron     ./conformance.sh iron
+  fi
 fi
 
 docker compose logs hematite > results/hematite.log 2>&1
