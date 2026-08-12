@@ -67,6 +67,7 @@ class Echo(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.flush()
         hdr = self.rfile.read(2)
+        # 7-bit length is safe: paired client sends 10-byte payload, never triggers 126/127 extended-length paths
         length = hdr[1] & 0x7F
         mask = self.rfile.read(4)
         masked = self.rfile.read(length)

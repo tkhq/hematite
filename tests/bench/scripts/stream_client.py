@@ -58,7 +58,12 @@ if mode == "ws":
     mask = os.urandom(4)
     masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
     t.sendall(bytes([0x81, 0x80 | len(payload)]) + mask + masked)
-    hdr = t.recv(2)
+    hdr = b""
+    while len(hdr) < 2:
+        chunk = t.recv(2 - len(hdr))
+        if not chunk:
+            sys.exit(1)
+        hdr += chunk
     length = hdr[1] & 0x7F
     echoed = b""
     while len(echoed) < length:

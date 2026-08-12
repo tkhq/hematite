@@ -4,6 +4,10 @@
 # For hematite, run.sh recreates the service with HEMATITE_CONFIG=hematite-conf.yaml first.
 set -uo pipefail
 cd "$(dirname "$0")"
+if [[ $# -ne 1 ]]; then
+  echo "Usage: conformance.sh <hematite|iron>" >&2
+  exit 2
+fi
 T=$1
 P="http://$T:8080"
 mkdir -p results
