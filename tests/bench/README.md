@@ -24,6 +24,9 @@ Knobs (perf suite): `DUR` (30s), `RATE` (400/s fixed-rate run), `WORKERS`
 - Conformance scenario 6 (header stripping) is N/A for iron-proxy: it has
   no `header_allowlist` transform. hematite runs that suite with
   `configs/hematite-conf.yaml`; perf uses the minimal equivalent configs.
+- hematite's config runs a management listener and DNS server that iron-proxy
+  lacks, so hematite's idle RSS carries extra product surface; the core perf
+  comparison (allowlist + secrets transforms) is equivalent.
 - Results from a laptop are honest for relative comparison only.
 
 ## Layout
