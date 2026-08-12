@@ -24,6 +24,22 @@ services:
         ipv4_address: 172.28.0.11
         aliases: [stream.test]
 
+  hematite:
+    build:
+      context: ../..
+    environment:
+      BENCH_API_KEY: sk-bench-real-key-do-not-log
+      HEMATITE_MANAGEMENT_API_KEY: bench-mgmt-token
+      SSL_CERT_FILE: /certs/ca.crt
+    volumes:
+      - ./configs/${HEMATITE_CONFIG:-hematite.yaml}:/etc/hematite/hematite.yaml:ro
+      - ./certs:/certs:ro
+    extra_hosts:
+      - "imds-test.local:169.254.169.254"
+    networks:
+      bench:
+        ipv4_address: 172.28.0.2
+
   loadgen:
     build:
       context: .
