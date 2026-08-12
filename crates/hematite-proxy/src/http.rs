@@ -545,6 +545,17 @@ async fn handle(
         .map(|(n, v)| (n.to_string(), v.to_string()))
         .collect();
     strip_hop_by_hop(&mut out_headers, is_ws);
+    // HTTP/2 requests carry the host in the :authority pseudo-header, which
+    // does not appear in req.headers() and is therefore absent from
+    // out_headers. HTTP/1.1 upstream connections require a Host header
+    // (RFC 7230 §5.4). Inject one when the pipeline hasn't already produced
+    // one (e.g. from the original h1 request or a transform).
+    if !out_headers
+        .iter()
+        .any(|(n, _)| n.eq_ignore_ascii_case("host"))
+    {
+        out_headers.insert(0, ("host".to_string(), summary.host.clone()));
+    }
     if !over_cap {
         // Buffered body forwards with an exact Content-Length re-derived
         // from the (possibly rewritten) bytes (Part 01 §4).
