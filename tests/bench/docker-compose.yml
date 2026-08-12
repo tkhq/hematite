@@ -44,7 +44,7 @@ services:
     # Brief specified ironsh/iron-proxy:v0.49.0; Docker Hub uses no "v" prefix — actual tag is 0.49.0.
     # Entrypoint is the iron-proxy binary directly (not a wrapper script).
     # Secrets block uses nested replace: form required by v0.49.0 schema (see configs/iron.yaml).
-    image: ironsh/iron-proxy:0.49.0
+    image: ironsh/iron-proxy:0.49.0@sha256:c4628019c24f4cc8d77564a26b7c9cedb00accee6f93d06270e85fb8f9c6a7da
     command: ["-config", "/etc/iron-proxy/proxy.yaml"]
     environment:
       BENCH_API_KEY: sk-bench-real-key-do-not-log
