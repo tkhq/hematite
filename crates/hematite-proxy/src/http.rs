@@ -550,6 +550,15 @@ async fn handle(
     // out_headers. HTTP/1.1 upstream connections require a Host header
     // (RFC 7230 §5.4). Inject one when the pipeline hasn't already produced
     // one (e.g. from the original h1 request or a transform).
+    //
+    // The injected Host is added post-transform (after strip_hop_by_hop), so it
+    // is invisible to header_allowlist checks and is intentionally absent from
+    // the audit record's transform traces. This is safe because: (1) the
+    // injected value is summary.host, which already passed allowlist validation
+    // at the request ingress; (2) the post-transform injection prevents
+    // header_allowlist from removing a critical header; (3) omitting it from
+    // audit traces reflects the fact that it was never part of the original
+    // request data flow.
     if !out_headers
         .iter()
         .any(|(n, _)| n.eq_ignore_ascii_case("host"))
