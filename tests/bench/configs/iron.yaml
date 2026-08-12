@@ -1,0 +1,38 @@
+# Perf-equivalent config: same transforms as configs/hematite.yaml.
+# Deviation from brief: secrets block uses nested replace: form (required by v0.49.0 schema).
+dns:
+  listen: ":53"
+  proxy_ip: "172.28.0.3"
+
+proxy:
+  http_listen: ":80"
+  https_listen: ":443"
+  tunnel_listen: ":8080"
+
+tls:
+  ca_cert: "/certs/ca.crt"
+  ca_key: "/certs/ca.key"
+
+transforms:
+  - name: allowlist
+    config:
+      domains:
+        - "upstream.test"
+        - "stream.test"
+        - "imds-test.local"
+
+  - name: secrets
+    config:
+      secrets:
+        - source:
+            type: env
+            var: BENCH_API_KEY
+          replace:
+            proxy_value: "proxy-bench-token-123"
+            match_headers: ["Authorization"]
+            match_body: false
+          rules:
+            - host: "upstream.test"
+
+log:
+  level: "info"

@@ -40,6 +40,24 @@ services:
       bench:
         ipv4_address: 172.28.0.2
 
+  iron:
+    # Brief specified ironsh/iron-proxy:v0.49.0; Docker Hub uses no "v" prefix — actual tag is 0.49.0.
+    # Entrypoint is the iron-proxy binary directly (not a wrapper script).
+    # Secrets block uses nested replace: form required by v0.49.0 schema (see configs/iron.yaml).
+    image: ironsh/iron-proxy:0.49.0
+    command: ["-config", "/etc/iron-proxy/proxy.yaml"]
+    environment:
+      BENCH_API_KEY: sk-bench-real-key-do-not-log
+      SSL_CERT_FILE: /certs/ca.crt
+    volumes:
+      - ./configs/iron.yaml:/etc/iron-proxy/proxy.yaml:ro
+      - ./certs:/certs:ro
+    extra_hosts:
+      - "imds-test.local:169.254.169.254"
+    networks:
+      bench:
+        ipv4_address: 172.28.0.3
+
   loadgen:
     build:
       context: .
