@@ -22,8 +22,11 @@ helm install hematite deploy/chart/hematite -f my-values.yaml
 ```
 
 The chart deploys one hematite Deployment and Service per namespace. At
-minimum, `values.config` must include an `allowlist` transform — hematite
-refuses to start without one.
+minimum, `values.config` must include an `allowlist` transform with at least
+one domain or CIDR — hematite refuses to start on an empty allowlist. The
+chart's default `values.config` allowlists only `example.invalid` (a
+reserved-for-testing name that resolves nowhere), so a default install boots
+but egresses nothing. Replace `domains` with your real allowlist before use.
 
 ### TLS secret
 

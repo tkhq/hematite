@@ -73,6 +73,8 @@ arises and names it `INV-n`. The four global ones:
 
 ## 6. Relationship to iron-proxy
 
-hematite v1 is behaviorally compatible with iron-proxy's core data plane where
-this spec says so, and deliberately narrower everywhere else (Part 10). Where
-the two disagree, this spec wins; compatibility is a non-goal.
+hematite's design is informed by iron-proxy, the project we learned the most
+from about which invariants are worth holding. Part 10 records where hematite
+is deliberately narrower. hematite is its own design. It does not aim to
+reproduce iron-proxy's behavior or configuration, and makes no compatibility
+claim.

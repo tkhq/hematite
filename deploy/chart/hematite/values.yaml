@@ -33,13 +33,18 @@ management:
 # Literal hematite.yaml (spec Part 09). The chart injects env overrides
 # for tls cert paths, dns.proxy_ip, and the management API key, so those
 # may be omitted here.
+#
+# The default below boots but egresses nothing: the allowlist matches only
+# a reserved-for-testing name. Replace `domains` with your real egress
+# allowlist. An empty `domains: []` is rejected at boot (the allowlist
+# requires at least one domain or CIDR), so this placeholder is intentional.
 config: |
   proxy:
     http_listen: ":80"
   transforms:
     - name: allowlist
       config:
-        domains: []
+        domains: ["example.invalid"]   # replace with your egress allowlist
   log:
     level: "info"
 
