@@ -29,14 +29,15 @@ pub enum DialError {
 
 /// Resolve, apply the guard, connect, and — when `scheme_https` — complete
 /// an upstream TLS handshake verified against the configured roots
-/// (Part 07 §4). Returns a unified stream.
+/// (Part 07 §4). Returns a unified stream and the peer address actually
+/// dialed (the pool re-checks the guard against it on reuse).
 pub async fn connect_upstream(
     proof: AllowProof,
     host: &str,
     port: u16,
     scheme_https: bool,
     runtime: &Runtime,
-) -> Result<Box<dyn Io>, DialError> {
+) -> Result<(Box<dyn Io>, std::net::IpAddr), DialError> {
     // The proof is consumed by value: no proof, no socket (INV-2).
     let _ = proof;
 
@@ -81,7 +82,7 @@ pub async fn connect_upstream(
         };
         if !scheme_https {
             runtime.metrics.inc_dial(DialResult::Ok);
-            return Ok(Box::new(tcp));
+            return Ok((Box::new(tcp), addr.ip()));
         }
         let connector = TlsConnector::from(runtime.upstream_tls.clone());
         let server_name = ServerName::try_from(host.to_string())
@@ -89,7 +90,7 @@ pub async fn connect_upstream(
         match connector.connect(server_name, tcp).await {
             Ok(tls) => {
                 runtime.metrics.inc_dial(DialResult::Ok);
-                return Ok(Box::new(tls));
+                return Ok((Box::new(tls), addr.ip()));
             }
             Err(e) => {
                 runtime.metrics.inc_dial(DialResult::TlsError);

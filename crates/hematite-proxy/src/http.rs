@@ -28,12 +28,13 @@ use hematite_kernel::verdict::Trace;
 use tracing::Instrument as _;
 
 use crate::audit::{AuditSink, PendingAudit};
-use crate::dial::{connect_upstream, DialError};
+use crate::dial::DialError;
 use crate::hop::strip_hop_by_hop;
+use crate::pool::{self, PooledSender};
 use crate::state::SharedState;
 
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
-type OutBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
+type BoxError = crate::pool::BoxError;
+type OutBody = crate::pool::UpstreamBody;
 
 fn empty_body() -> OutBody {
     Full::new(Bytes::new()).map_err(|e| match e {}).boxed()
@@ -511,31 +512,32 @@ async fn handle(
         host = %dial_host,
         port = dial_port,
     );
-    let stream = match connect_upstream(proof, &dial_host, dial_port, ctx.scheme_https, &runtime)
-        .instrument(dial_span)
-        .await
-    {
-        Ok(s) => s,
-        Err(DialError::Denied(denial)) => {
-            record.action = Action::Reject;
-            record.rejected_by = Some("guard".into());
-            record.status_code = Some(502);
-            record.guard = Some(denial);
-            record.duration_ms = ms_since(started);
-            record_outcome(&span, &record);
-            pending.emit(&record);
-            return Ok(status_response(StatusCode::BAD_GATEWAY));
-        }
-        Err(DialError::Failed(message)) => {
-            record.action = Action::Error;
-            record.status_code = Some(502);
-            record.error = Some(message);
-            record.duration_ms = ms_since(started);
-            record_outcome(&span, &record);
-            pending.emit(&record);
-            return Ok(status_response(StatusCode::BAD_GATEWAY));
-        }
-    };
+    let (mut pooled, _reused) =
+        match pool::acquire(proof, &dial_host, dial_port, ctx.scheme_https, &runtime)
+            .instrument(dial_span)
+            .await
+        {
+            Ok(p) => p,
+            Err(DialError::Denied(denial)) => {
+                record.action = Action::Reject;
+                record.rejected_by = Some("guard".into());
+                record.status_code = Some(502);
+                record.guard = Some(denial);
+                record.duration_ms = ms_since(started);
+                record_outcome(&span, &record);
+                pending.emit(&record);
+                return Ok(status_response(StatusCode::BAD_GATEWAY));
+            }
+            Err(DialError::Failed(message)) => {
+                record.action = Action::Error;
+                record.status_code = Some(502);
+                record.error = Some(message);
+                record.duration_ms = ms_since(started);
+                record_outcome(&span, &record);
+                pending.emit(&record);
+                return Ok(status_response(StatusCode::BAD_GATEWAY));
+            }
+        };
 
     // Part 07 §3 — header hygiene. A WebSocket handshake keeps Upgrade /
     // Connection so the switch survives to the upstream (Part 05 §5).
@@ -619,7 +621,7 @@ async fn handle(
     // Send; the response-header timeout covers time-to-headers (Part 07 §4).
     let upstream_span = tracing::info_span!(parent: &span, "upstream");
     let mut upstream_response = match send_upstream(
-        stream,
+        &mut pooled,
         upstream_req,
         runtime.upstream_response_header_timeout,
     )
@@ -697,6 +699,12 @@ async fn handle(
             record_outcome(&span, &record);
             pending.emit(&record);
 
+            // Return the connection for reuse (Part 07 §4). Only the
+            // forward path checks in: an upgrade consumed the socket, and
+            // a replaced/errored response leaves an unread upstream body,
+            // which hyper resolves by closing the connection.
+            runtime.pool.checkin(pooled);
+
             let (mut parts, body) = upstream_response.into_parts();
             let mut resp_headers: Vec<(String, String)> = parts
                 .headers
@@ -748,28 +756,15 @@ async fn handle(
     }
 }
 
-async fn send_upstream<IO>(
-    stream: IO,
+/// Send on a (possibly reused) pooled sender. The connection task and
+/// handshake live in `pool::acquire`; this only applies the response-header
+/// timeout (Part 07 §4).
+async fn send_upstream(
+    pooled: &mut PooledSender,
     req: Request<OutBody>,
     header_timeout: std::time::Duration,
-) -> Result<Response<Incoming>, String>
-where
-    IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    let io = TokioIo::new(stream);
-    let (mut sender, conn) = hyper::client::conn::http1::Builder::new()
-        // Replay the original header-name casing recorded on the request
-        // parts (Part 02 §5).
-        .preserve_header_case(true)
-        .handshake(io)
-        .await
-        .map_err(|e| format!("upstream handshake: {e}"))?;
-    // with_upgrades so a 101 hands the upstream socket to `upgrade::on`
-    // for the WebSocket byte copy (Part 05 §5).
-    tokio::spawn(async move {
-        let _ = conn.with_upgrades().await;
-    });
-    match tokio::time::timeout(header_timeout, sender.send_request(req)).await {
+) -> Result<Response<Incoming>, String> {
+    match tokio::time::timeout(header_timeout, pooled.sender.send_request(req)).await {
         Ok(Ok(resp)) => Ok(resp),
         Ok(Err(e)) => Err(format!("upstream request: {e}")),
         Err(_) => Err("upstream response header timeout".into()),

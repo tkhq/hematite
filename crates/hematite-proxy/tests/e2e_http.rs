@@ -90,6 +90,7 @@ async fn spawn_proxy(
         upstream_tls: hematite_proxy::state::native_upstream_config().unwrap(),
         cert_cache: None,
         metrics: hematite_proxy::metrics::Metrics::new("test"),
+        pool: hematite_proxy::pool::Pool::new(),
     };
     let state = SharedState::new(runtime);
     let sink = Arc::new(TestSink::default());

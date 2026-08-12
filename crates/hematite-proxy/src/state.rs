@@ -85,6 +85,10 @@ pub struct Runtime {
     /// route is gated on `observability.metrics.enabled`. Reused across
     /// reloads so counters survive a config swap.
     pub metrics: Arc<Metrics>,
+    /// Idle upstream connection pool (Part 07 §4). Built fresh per runtime:
+    /// a config reload therefore starts with an empty pool, so pooled
+    /// connections can never outlive the policy that admitted them.
+    pub pool: crate::pool::Pool,
 }
 
 /// Build an upstream TLS client config trusting the OS root store
