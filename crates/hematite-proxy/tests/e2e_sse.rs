@@ -62,6 +62,7 @@ async fn sse_streams_incrementally() {
         upstream_tls: hematite_proxy::state::native_upstream_config().unwrap(),
         cert_cache: None,
         metrics: hematite_proxy::metrics::Metrics::new("test"),
+        tunnel_passthrough: Vec::new(),
     };
     let state = SharedState::new(runtime);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

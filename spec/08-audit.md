@@ -51,7 +51,9 @@ Field rules:
 - `host` is the empty string only when the failure precedes host extraction
   (`rejected_by: "listener"`); it is non-empty everywhere else.
 - `sni` present only on TLS legs; `tunnel` only for in-tunnel requests
-  (holding the handshake's traces); `guard` only on guard denials;
+  (holding the handshake's traces) and for passthrough tunnels, where
+  `tunnel.passthrough: true` marks the record and the tunnel emits exactly
+  one record on close (Part 05 §4.4); `guard` only on guard denials;
   `body_capture` only when captured.
 - Traces are Part 01 §3 objects, in execution order, request and response
   paths separately.

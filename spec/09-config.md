@@ -12,6 +12,7 @@ validation (typos must not silently no-op — threat T9).
 ```yaml
 dns:        { enabled, listen, proxy_ip, upstream_resolver, passthrough, records }
 proxy:      { http_listen, https_listen, tunnel_listen,
+              tunnel_passthrough_domains,
               max_request_body_bytes, max_response_body_bytes,
               upstream_response_header_timeout, upstream_deny_cidrs,
               http_proxy, https_proxy, no_proxy }
@@ -41,6 +42,7 @@ Defaults:
 | `proxy.http_listen` | `:80` |
 | `proxy.https_listen` | unset (disabled; requires `tls`) |
 | `proxy.tunnel_listen` | unset (disabled) |
+| `proxy.tunnel_passthrough_domains` | `[]` (every tunnel is bumped; Part 05 §4.4) |
 | `proxy.max_request_body_bytes` | 1 MiB |
 | `proxy.max_response_body_bytes` | 0 (uncapped) |
 | `proxy.upstream_response_header_timeout` | 30s |

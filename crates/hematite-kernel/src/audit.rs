@@ -34,6 +34,11 @@ pub struct GuardDenial {
 pub struct TunnelGroup {
     pub target: String,
     pub request_transforms: Vec<Trace>,
+    /// Part 05 §4.4 — true when the tunnel was spliced without TLS
+    /// interception. Omitted (false) for bumped tunnels.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default)]
+    pub passthrough: bool,
 }
 
 /// Part 08 §2 — the one JSON object emitted per request. Optional fields

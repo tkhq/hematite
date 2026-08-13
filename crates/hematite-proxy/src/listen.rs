@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use hematite_kernel::audit::{Action, AuditRecord};
+use hematite_kernel::audit::{Action, AuditRecord, TunnelGroup};
 use hematite_kernel::summary::{Body, Headers, Mode, RequestSummary};
 use hematite_kernel::verdict::Trace;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -13,11 +13,13 @@ use tokio_rustls::LazyConfigAcceptor;
 use tracing::Instrument as _;
 
 use crate::audit::{AuditSink, PendingAudit};
+use crate::dial::{connect_upstream, DialError};
 use crate::http::{serve_io, ConnCtx};
-use crate::state::SharedState;
+use crate::state::{Runtime, SharedState};
 use crate::tunnel::{
-    dispatch, parse_connect, parse_socks5_methods, parse_socks5_request, sniff_inner,
-    socks5_failure, ClientProtocol, ConnectTarget, InnerProtocol, Socks5Method, SOCKS5_SUCCESS,
+    dispatch, parse_connect, parse_socks5_methods, parse_socks5_request, scan_client_hello_sni,
+    sniff_inner, socks5_failure, ClientProtocol, ConnectTarget, InnerProtocol, SniScan,
+    Socks5Method, SOCKS5_SUCCESS,
 };
 
 const SNIFF_CAP: usize = 16 * 1024;
@@ -221,6 +223,18 @@ async fn handle_tunnel(
         }
         return Ok(());
     }
+    // Part 05 §4.4 — passthrough targets are spliced, never bumped. The
+    // dial (and its guard check) happens before any success reply.
+    if runtime.passthrough_matches(&target.host) {
+        let hematite_kernel::pipeline::Outcome::Continue(proof) = outcome.outcome else {
+            unreachable!("allowed implies Continue");
+        };
+        return passthrough_tunnel(
+            stream, is_socks, target, proof, remote, &runtime, sink, traces,
+        )
+        .await;
+    }
+
     if is_socks {
         stream.write_all(&SOCKS5_SUCCESS).await?;
     } else {
@@ -366,6 +380,132 @@ fn synthetic_connect_summary(target: &ConnectTarget, remote: &str) -> RequestSum
         sni: None,
         remote_addr: Some(remote.to_string()),
     }
+}
+
+/// Part 05 §4.4 — splice a policy-approved tunnel without TLS
+/// interception. The guard applies at dial time (the proof is consumed by
+/// `connect_upstream`, so INV-2 holds). When the inner bytes are TLS, the
+/// client's SNI must equal the CONNECT authority (threat T6) or the tunnel
+/// is torn down before any byte reaches the upstream. Exactly one audit
+/// record is emitted per tunnel, marked `tunnel.passthrough`.
+#[allow(clippy::too_many_arguments)]
+async fn passthrough_tunnel(
+    mut stream: TcpStream,
+    is_socks: bool,
+    target: ConnectTarget,
+    proof: hematite_kernel::pipeline::AllowProof,
+    remote: String,
+    runtime: &Runtime,
+    sink: Arc<dyn AuditSink>,
+    traces: Vec<Trace>,
+) -> std::io::Result<()> {
+    let started = std::time::Instant::now();
+    let tunnel_group = || TunnelGroup {
+        target: format!("{}:{}", target.host, target.port),
+        request_transforms: Vec::new(),
+        passthrough: true,
+    };
+
+    // Dial before replying: a guard denial or connect failure must fail the
+    // CONNECT itself, not surface after a success reply.
+    let mut upstream =
+        match connect_upstream(proof, &target.host, target.port, false, runtime).await {
+            Ok(io) => io,
+            Err(e) => {
+                let mut pending = PendingAudit::new(sink.clone(), Some(remote.clone()));
+                let mut record = base_tunnel_record(&remote, &target, &traces);
+                match e {
+                    DialError::Denied(denial) => {
+                        record.action = Action::Reject;
+                        record.rejected_by = Some("guard".into());
+                        record.guard = Some(denial);
+                    }
+                    DialError::Failed(message) => {
+                        record.action = Action::Error;
+                        record.error = Some(message);
+                    }
+                }
+                record.status_code = Some(502);
+                record.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+                record.tunnel = Some(tunnel_group());
+                pending.emit(&record);
+                if is_socks {
+                    let _ = stream.write_all(&socks5_failure(0x02)).await;
+                } else {
+                    let _ = stream.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
+                }
+                return Ok(());
+            }
+        };
+
+    if is_socks {
+        stream.write_all(&SOCKS5_SUCCESS).await?;
+    } else {
+        stream
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .await?;
+    }
+
+    // Buffer the client's opening bytes; when they are a TLS ClientHello,
+    // enforce SNI == CONNECT authority before anything reaches the
+    // upstream. Non-TLS inner traffic and server-speaks-first protocols
+    // proceed after the handshake timeout with whatever was buffered.
+    let mut buffered = Vec::new();
+    let mut observed_sni = None;
+    let mut tmp = [0u8; 4096];
+    loop {
+        if buffered.len() > SNIFF_CAP {
+            break;
+        }
+        let n = match tokio::time::timeout(HANDSHAKE_TIMEOUT, stream.read(&mut tmp)).await {
+            Ok(Ok(n)) => n,
+            _ => 0,
+        };
+        if n == 0 {
+            break;
+        }
+        buffered.extend_from_slice(&tmp[..n]);
+        match scan_client_hello_sni(&buffered) {
+            SniScan::Incomplete => continue,
+            SniScan::Sni(name) => {
+                observed_sni = Some(name);
+                break;
+            }
+            SniScan::NoSni | SniScan::NotTls => break,
+        }
+    }
+    if let Some(name) = &observed_sni {
+        if *name != target.host.to_ascii_lowercase() {
+            let mut pending = PendingAudit::new(sink.clone(), Some(remote.clone()));
+            let mut record = base_tunnel_record(&remote, &target, &traces);
+            record.action = Action::Reject;
+            record.rejected_by = Some("listener".into());
+            record.sni = Some(name.clone());
+            record.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+            record.tunnel = Some(tunnel_group());
+            pending.emit(&record);
+            return Ok(());
+        }
+    }
+
+    // Splice: replay the scanned prefix, then copy bytes both ways.
+    if !buffered.is_empty() {
+        upstream.write_all(&buffered).await?;
+    }
+    let copied = tokio::io::copy_bidirectional(&mut stream, &mut upstream).await;
+
+    let mut pending = PendingAudit::new(sink.clone(), Some(remote.clone()));
+    let mut record = base_tunnel_record(&remote, &target, &traces);
+    record.action = Action::Allow;
+    record.status_code = Some(200);
+    record.sni = observed_sni;
+    record.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+    record.tunnel = Some(tunnel_group());
+    if let Err(e) = copied {
+        record.error = Some(format!("splice: {e}"));
+    }
+    pending.emit(&record);
+    Ok(())
 }
 
 fn emit_tunnel_reject(

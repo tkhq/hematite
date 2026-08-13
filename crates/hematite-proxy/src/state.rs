@@ -85,6 +85,17 @@ pub struct Runtime {
     /// route is gated on `observability.metrics.enabled`. Reused across
     /// reloads so counters survive a config swap.
     pub metrics: Arc<Metrics>,
+    /// Part 05 §4.4 — CONNECT/SOCKS5 targets matching these globs are
+    /// spliced (no TLS interception) instead of bumped. The allowlist and
+    /// guard still apply; per-request transforms cannot (enforced at load).
+    pub tunnel_passthrough: Vec<hematite_kernel::matcher::DomainGlob>,
+}
+
+impl Runtime {
+    /// Whether a CONNECT target host takes the passthrough path.
+    pub fn passthrough_matches(&self, host: &str) -> bool {
+        self.tunnel_passthrough.iter().any(|g| g.matches(host))
+    }
 }
 
 /// Build an upstream TLS client config trusting the OS root store

@@ -89,6 +89,40 @@ Peek the first byte after the handshake:
 SNI peeking MUST cap buffered ClientHello bytes (16 KiB) and time out (5 s)
 against slow clients (threat T8).
 
+### 4.4 Passthrough
+
+A CONNECT or SOCKS5 target whose hostname matches a
+`proxy.tunnel_passthrough_domains` glob (Part 02 §2 semantics) is spliced,
+not bumped: after the policy decision and a successful upstream dial, the
+listener copies bytes in both directions without TLS interception.
+
+Order of operations, each mandatory:
+
+1. The synthetic CONNECT summary runs the request pipeline as in §4.1. A
+   non-`Continue` outcome rejects the tunnel before any dial.
+2. The upstream dial consumes the pipeline's proof and applies the guard
+   (Part 07 §2) to the address actually dialed. A denial or dial failure
+   fails the CONNECT (HTTP 502 / SOCKS5 failure); the success reply is sent
+   only after the dial completes.
+3. When the first buffered client bytes are a TLS ClientHello, its SNI MUST
+   equal the CONNECT target hostname (case-insensitive); on mismatch the
+   tunnel closes before any byte reaches the upstream (threat T6). The scan
+   reuses the §4.3 caps. Non-TLS bytes, an absent SNI, and a scan timeout
+   pass through: the CONNECT-target policy already applied.
+4. Exactly one audit record is emitted per passthrough tunnel when it
+   closes: `method: "CONNECT"`, `mode: "tunnel"`, the handshake traces, the
+   observed SNI when present, and `tunnel.passthrough: true` (Part 08 §2).
+
+Because the proxy never sees plaintext, per-request transforms cannot apply
+inside a passthrough tunnel. A configuration in which any transform rule's
+`host` overlaps a passthrough glob (in either match direction) MUST be
+rejected at load (Part 09 §3): a policy that cannot run is a configuration
+error, not a warning. The `allowlist` transform is exempt — it governs the
+CONNECT itself.
+
+Passthrough requires no `tls` section: it operates at L1 capability on the
+tunnel listener.
+
 ## 5. Streaming (L2)
 
 - **WebSocket**: a request with a valid `Upgrade: websocket` handshake that

@@ -26,7 +26,8 @@
       "required": ["target", "request_transforms"],
       "properties": {
         "target": { "type": "string" },
-        "request_transforms": { "$ref": "#/$defs/traces" }
+        "request_transforms": { "$ref": "#/$defs/traces" },
+        "passthrough": { "const": true }
       }
     },
     "guard": {
