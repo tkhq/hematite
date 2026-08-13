@@ -387,6 +387,9 @@ fn build_pipeline_inner(
     // captured post-swap, the log would hold the real credential (Part 08
     // §3, INV-1). Refuse to load, not warn.
     body_capture_ordering(specs)?;
+    // Same class (Part 08 §3): an `annotate` group that captures a header a
+    // preceding `secrets` entry may swap would record the real credential.
+    annotate_after_secret_swap(specs)?;
 
     let transforms = specs
         .iter()
@@ -422,6 +425,94 @@ fn body_capture_ordering(specs: &[TransformSpec]) -> Result<(), ConfigError> {
                  before the secrets entry (Part 04 §6, Part 08 §3)"
                     .into(),
             ));
+        }
+    }
+    Ok(())
+}
+
+/// The set of headers a `secrets` transform may swap: `Some(entries)` when
+/// every configured secret restricts to a name list, `All` when any secret
+/// scans all headers (`match_headers` absent or `[]`).
+enum SwapHeaders {
+    All,
+    Some(Vec<HeaderNameEntry>),
+}
+
+impl SwapHeaders {
+    /// Would a secret swap in this transform touch the header `name`?
+    fn covers(&self, name: &str) -> bool {
+        match self {
+            SwapHeaders::All => true,
+            SwapHeaders::Some(entries) => entries.iter().any(|e| e.matches(name)),
+        }
+    }
+}
+
+/// The headers a single `secrets` transform spec may rewrite. `secrets`
+/// always scans headers (there is no `match_headers: false`); the only
+/// question is which names.
+fn secret_swap_headers(spec: &TransformSpec) -> SwapHeaders {
+    let entries = match spec.config.get("secrets").and_then(|v| v.as_array()) {
+        Some(arr) => arr,
+        None => return SwapHeaders::Some(Vec::new()),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        match entry.get("match_headers") {
+            // Absent or empty list = scan all headers (Part 04 §3.2).
+            None => return SwapHeaders::All,
+            Some(Value::Array(list)) if list.is_empty() => return SwapHeaders::All,
+            Some(Value::Array(list)) => {
+                for h in list.iter().filter_map(|v| v.as_str()) {
+                    if let Ok(entry) = HeaderNameEntry::parse(h, true) {
+                        names.push(entry);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    SwapHeaders::Some(names)
+}
+
+/// Refuse a pipeline where an `annotate` group captures a header that a
+/// preceding `secrets` entry may swap (Part 04 §2/§6, Part 08 §3): the
+/// annotation would record the resolved credential, not the proxy token.
+/// The recommended order puts `annotate` before `secrets`, which is safe.
+fn annotate_after_secret_swap(specs: &[TransformSpec]) -> Result<(), ConfigError> {
+    for (a_idx, spec) in specs.iter().enumerate() {
+        if spec.name != "annotate" {
+            continue;
+        }
+        let captured: Vec<String> = spec
+            .config
+            .get("annotations")
+            .and_then(|v| v.as_array())
+            .map(|groups| {
+                groups
+                    .iter()
+                    .filter_map(|g| g.get("headers").and_then(|h| h.as_array()))
+                    .flatten()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.to_ascii_lowercase())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if captured.is_empty() {
+            continue;
+        }
+        for prior in &specs[..a_idx] {
+            if prior.name != "secrets" {
+                continue;
+            }
+            let swaps = secret_swap_headers(prior);
+            if let Some(name) = captured.iter().find(|n| swaps.covers(n)) {
+                return Err(ConfigError(format!(
+                    "annotate captures header {name:?} that a preceding secrets \
+                     entry may swap; the log would hold the real credential — \
+                     place annotate before secrets (Part 04 §2, Part 08 §3)"
+                )));
+            }
         }
     }
     Ok(())

@@ -236,6 +236,102 @@ fn body_capture_before_secrets_still_loads() {
 }
 
 #[test]
+fn annotate_capturing_swapped_header_refuses_to_load() {
+    // annotate runs after a secrets entry that swaps Authorization, so it
+    // would record the resolved credential — same class as body_capture
+    // (Part 08 §3). Must fail at load.
+    let specs: Vec<TransformSpec> = serde_json::from_value(json!([
+        { "name": "allowlist", "config": { "domains": ["api.example.com"] } },
+        { "name": "secrets", "config": { "secrets": [
+            { "source": { "type": "env", "var": "KEY" },
+              "proxy_value": "proxy-tok",
+              "match_headers": ["Authorization"],
+              "rules": [{ "host": "api.example.com" }] }
+        ] } },
+        { "name": "annotate", "config": { "annotations": [
+            { "rules": [{ "host": "api.example.com" }], "headers": ["authorization"] }
+        ] } }
+    ]))
+    .unwrap();
+    let resolver = common::MapResolver::from_value(&json!({ "KEY": "sk-real" }));
+    assert!(
+        build_pipeline_with_resolver(&specs, std::sync::Arc::new(resolver)).is_err(),
+        "annotate after a swapping secrets entry must be a load error"
+    );
+}
+
+#[test]
+fn annotate_all_headers_secret_catches_any_capture() {
+    // match_headers: [] means the secret scans every header, so annotating
+    // ANY header afterward is unsafe.
+    let specs: Vec<TransformSpec> = serde_json::from_value(json!([
+        { "name": "allowlist", "config": { "domains": ["api.example.com"] } },
+        { "name": "secrets", "config": { "secrets": [
+            { "source": { "type": "env", "var": "KEY" },
+              "proxy_value": "proxy-tok",
+              "match_headers": [],
+              "rules": [{ "host": "api.example.com" }] }
+        ] } },
+        { "name": "annotate", "config": { "annotations": [
+            { "rules": [{ "host": "api.example.com" }], "headers": ["x-request-id"] }
+        ] } }
+    ]))
+    .unwrap();
+    let resolver = common::MapResolver::from_value(&json!({ "KEY": "sk-real" }));
+    assert!(
+        build_pipeline_with_resolver(&specs, std::sync::Arc::new(resolver)).is_err(),
+        "a scan-all secret makes any later annotate capture unsafe"
+    );
+}
+
+#[test]
+fn annotate_before_secrets_loads() {
+    // The recommended order: annotate sees the proxy token, not the swap.
+    let specs: Vec<TransformSpec> = serde_json::from_value(json!([
+        { "name": "allowlist", "config": { "domains": ["api.example.com"] } },
+        { "name": "annotate", "config": { "annotations": [
+            { "rules": [{ "host": "api.example.com" }], "headers": ["authorization"] }
+        ] } },
+        { "name": "secrets", "config": { "secrets": [
+            { "source": { "type": "env", "var": "KEY" },
+              "proxy_value": "proxy-tok",
+              "match_headers": ["Authorization"],
+              "rules": [{ "host": "api.example.com" }] }
+        ] } }
+    ]))
+    .unwrap();
+    let resolver = common::MapResolver::from_value(&json!({ "KEY": "sk-real" }));
+    assert!(
+        build_pipeline_with_resolver(&specs, std::sync::Arc::new(resolver)).is_ok(),
+        "annotate before secrets is the safe, recommended order"
+    );
+}
+
+#[test]
+fn annotate_disjoint_header_still_loads() {
+    // The secret swaps only Authorization; annotating a different header is
+    // fine.
+    let specs: Vec<TransformSpec> = serde_json::from_value(json!([
+        { "name": "allowlist", "config": { "domains": ["api.example.com"] } },
+        { "name": "secrets", "config": { "secrets": [
+            { "source": { "type": "env", "var": "KEY" },
+              "proxy_value": "proxy-tok",
+              "match_headers": ["Authorization"],
+              "rules": [{ "host": "api.example.com" }] }
+        ] } },
+        { "name": "annotate", "config": { "annotations": [
+            { "rules": [{ "host": "api.example.com" }], "headers": ["x-request-id"] }
+        ] } }
+    ]))
+    .unwrap();
+    let resolver = common::MapResolver::from_value(&json!({ "KEY": "sk-real" }));
+    assert!(
+        build_pipeline_with_resolver(&specs, std::sync::Arc::new(resolver)).is_ok(),
+        "annotate of a non-swapped header is safe"
+    );
+}
+
+#[test]
 fn transform_error_maps_to_error_action_and_502() {
     // No built-in L0 transform errors on in-memory data, so exercise the
     // record mapping directly through a reject-with-response outcome and
