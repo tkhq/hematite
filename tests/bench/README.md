@@ -4,6 +4,7 @@ A docker-compose harness that compares hematite (built from this tree)
 against iron-proxy (`ironsh/iron-proxy:0.49.0`) on four axes: MITM'd-HTTPS
 performance via CONNECT, a realistic AI-agent workload, operational
 footprint, and security conformance.
+Results and tradeoffs are written up in [COMPARISON.md](COMPARISON.md).
 Design doc: `docs/superpowers/specs/2026-08-12-bench-vs-iron-proxy-design.md`.
 
 ## Run
