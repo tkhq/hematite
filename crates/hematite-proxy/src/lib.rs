@@ -14,6 +14,7 @@ pub mod http;
 pub mod listen;
 pub mod management;
 pub mod metrics;
+pub mod pool;
 pub mod resolver;
 pub mod state;
 pub mod tls;

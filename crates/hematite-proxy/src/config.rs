@@ -599,6 +599,7 @@ pub fn build_runtime_with_metrics(
         upstream_tls,
         cert_cache,
         metrics,
+        pool: crate::pool::Pool::new(),
     })
 }
 

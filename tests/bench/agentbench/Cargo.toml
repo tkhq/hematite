@@ -1,0 +1,18 @@
+[package]
+name = "agentbench"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone tool: deliberately NOT part of the hematite workspace, so its
+# dependencies stay out of the product's Cargo.lock and Appendix E budget.
+[workspace]
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
+rustls-pemfile = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+strip = true

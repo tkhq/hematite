@@ -28,12 +28,13 @@ use hematite_kernel::verdict::Trace;
 use tracing::Instrument as _;
 
 use crate::audit::{AuditSink, PendingAudit};
-use crate::dial::{connect_upstream, DialError};
+use crate::dial::DialError;
 use crate::hop::strip_hop_by_hop;
+use crate::pool::{self, PooledSender};
 use crate::state::SharedState;
 
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
-type OutBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
+type BoxError = crate::pool::BoxError;
+type OutBody = crate::pool::UpstreamBody;
 
 fn empty_body() -> OutBody {
     Full::new(Bytes::new()).map_err(|e| match e {}).boxed()
@@ -400,7 +401,7 @@ async fn handle(
     let cap = runtime.max_request_body_bytes;
     // Keep the request parts: their extensions carry hyper's original
     // header-case map, which the upstream client replays (Part 02 §5).
-    let (mut parts, mut incoming) = req.into_parts();
+    let (parts, mut incoming) = req.into_parts();
     let mut buffered: Vec<u8> = Vec::new();
     let mut over_cap = false;
     loop {
@@ -511,11 +512,11 @@ async fn handle(
         host = %dial_host,
         port = dial_port,
     );
-    let stream = match connect_upstream(proof, &dial_host, dial_port, ctx.scheme_https, &runtime)
+    let mut pooled = match pool::acquire(proof, &dial_host, dial_port, ctx.scheme_https, &runtime)
         .instrument(dial_span)
         .await
     {
-        Ok(s) => s,
+        Ok(p) => p,
         Err(DialError::Denied(denial)) => {
             record.action = Action::Reject;
             record.rejected_by = Some("guard".into());
@@ -545,6 +546,26 @@ async fn handle(
         .map(|(n, v)| (n.to_string(), v.to_string()))
         .collect();
     strip_hop_by_hop(&mut out_headers, is_ws);
+    // HTTP/2 requests carry the host in the :authority pseudo-header, which
+    // does not appear in req.headers() and is therefore absent from
+    // out_headers. HTTP/1.1 upstream connections require a Host header
+    // (RFC 7230 §5.4). Inject one when the pipeline hasn't already produced
+    // one (e.g. from the original h1 request or a transform).
+    //
+    // The injected Host is added post-transform (after strip_hop_by_hop), so it
+    // is invisible to header_allowlist checks and is intentionally absent from
+    // the audit record's transform traces. This is safe because: (1) the
+    // injected value is summary.host, which already passed allowlist validation
+    // at the request ingress; (2) the post-transform injection prevents
+    // header_allowlist from removing a critical header; (3) omitting it from
+    // audit traces reflects the fact that it was never part of the original
+    // request data flow.
+    if !out_headers
+        .iter()
+        .any(|(n, _)| n.eq_ignore_ascii_case("host"))
+    {
+        out_headers.insert(0, ("host".to_string(), summary.host.clone()));
+    }
     if !over_cap {
         // Buffered body forwards with an exact Content-Length re-derived
         // from the (possibly rewritten) bytes (Part 01 §4).
@@ -556,34 +577,43 @@ async fn handle(
     } else {
         format!("{}?{}", summary.path, summary.query)
     };
-    let out_body: OutBody = if over_cap {
-        ChainBody {
+    // A buffered body can be replayed byte-for-byte; a streamed (over-cap)
+    // body is consumed by the first send and cannot.
+    let buffered_bytes: Option<Bytes> = if over_cap {
+        None
+    } else {
+        Some(Bytes::from(summary.body.read().to_vec()))
+    };
+    let first_body: OutBody = match &buffered_bytes {
+        Some(bytes) => Full::new(bytes.clone()).map_err(|e| match e {}).boxed(),
+        None => ChainBody {
             prefix: Some(Bytes::from(buffered)),
             inner: Box::pin(incoming),
         }
-        .boxed()
-    } else {
-        bytes_body(summary.body.read().to_vec())
+        .boxed(),
     };
 
-    // Rebuild the upstream request on the preserved parts, so their
-    // extensions (hyper's original header-case map) ride along and the
+    // Build the upstream request from scratch each attempt, carrying the
+    // preserved parts' extensions (hyper's original header-case map) so the
     // client replays the wire casing of names (Part 02 §5). Body drops to
     // http/1.1 toward the upstream.
-    let build = (|| -> Result<Request<OutBody>, BoxError> {
-        parts.method = hyper::Method::from_bytes(summary.method.as_bytes())?;
-        parts.uri = path_and_query.parse()?;
-        parts.version = hyper::Version::HTTP_11;
+    let extensions = parts.extensions.clone();
+    let build_request = |body: OutBody| -> Result<Request<OutBody>, BoxError> {
+        let mut req = Request::new(body);
+        *req.method_mut() = hyper::Method::from_bytes(summary.method.as_bytes())?;
+        *req.uri_mut() = path_and_query.parse()?;
+        *req.version_mut() = hyper::Version::HTTP_11;
         let mut headers = hyper::HeaderMap::new();
         for (name, value) in &out_headers {
             let n = hyper::header::HeaderName::from_bytes(name.as_bytes())?;
             let v = hyper::header::HeaderValue::from_bytes(value.as_bytes())?;
             headers.append(n, v);
         }
-        parts.headers = headers;
-        Ok(Request::from_parts(parts, out_body))
-    })();
-    let upstream_req = match build {
+        *req.headers_mut() = headers;
+        *req.extensions_mut() = extensions.clone();
+        Ok(req)
+    };
+    let upstream_req = match build_request(first_body) {
         Ok(r) => r,
         Err(e) => {
             record.action = Action::Error;
@@ -596,17 +626,95 @@ async fn handle(
         }
     };
 
+    // Safe to replay on a stale reused connection: the body is buffered and
+    // the method is idempotent-safe (Go's http.Transport rule). A failed
+    // POST is never replayed — the upstream may have executed it.
+    let replay_safe = buffered_bytes.is_some()
+        && matches!(
+            summary.method.as_str(),
+            "GET" | "HEAD" | "OPTIONS" | "TRACE"
+        );
+
     // Send; the response-header timeout covers time-to-headers (Part 07 §4).
     let upstream_span = tracing::info_span!(parent: &span, "upstream");
-    let mut upstream_response = match send_upstream(
-        stream,
+    let first_attempt = send_upstream(
+        &mut pooled,
         upstream_req,
         runtime.upstream_response_header_timeout,
     )
-    .instrument(upstream_span)
-    .await
-    {
+    .instrument(upstream_span.clone())
+    .await;
+    let mut upstream_response = match first_attempt {
         Ok(r) => r,
+        Err(first_err) if replay_safe && pooled.reused() => {
+            // Stale reuse: the pooled connection died between checkout and
+            // write. Redeem the retained proof for one fresh dial and replay
+            // the identical request (pool module docs).
+            let retried = async {
+                let fresh = pool::redial(pooled, &runtime).await?;
+                Ok::<_, DialError>(fresh)
+            }
+            .await;
+            match retried {
+                Ok(fresh) => {
+                    pooled = fresh;
+                    let body = buffered_bytes
+                        .as_ref()
+                        .map(|b| Full::new(b.clone()).map_err(|e| match e {}).boxed())
+                        .expect("replay_safe implies buffered body");
+                    let req = match build_request(body) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            record.action = Action::Error;
+                            record.status_code = Some(502);
+                            record.error = Some(format!("rebuilding upstream request: {e}"));
+                            record.duration_ms = ms_since(started);
+                            record_outcome(&span, &record);
+                            pending.emit(&record);
+                            return Ok(status_response(StatusCode::BAD_GATEWAY));
+                        }
+                    };
+                    match send_upstream(&mut pooled, req, runtime.upstream_response_header_timeout)
+                        .instrument(upstream_span)
+                        .await
+                    {
+                        Ok(r) => r,
+                        Err(second_err) => {
+                            record.action = Action::Error;
+                            record.status_code = Some(502);
+                            record.error = Some(format!(
+                                "stale reuse ({first_err}); retry failed: {second_err}"
+                            ));
+                            record.duration_ms = ms_since(started);
+                            record_outcome(&span, &record);
+                            pending.emit(&record);
+                            return Ok(status_response(StatusCode::BAD_GATEWAY));
+                        }
+                    }
+                }
+                Err(DialError::Denied(denial)) => {
+                    record.action = Action::Reject;
+                    record.rejected_by = Some("guard".into());
+                    record.status_code = Some(502);
+                    record.guard = Some(denial);
+                    record.duration_ms = ms_since(started);
+                    record_outcome(&span, &record);
+                    pending.emit(&record);
+                    return Ok(status_response(StatusCode::BAD_GATEWAY));
+                }
+                Err(DialError::Failed(message)) => {
+                    record.action = Action::Error;
+                    record.status_code = Some(502);
+                    record.error = Some(format!(
+                        "stale reuse ({first_err}); redial failed: {message}"
+                    ));
+                    record.duration_ms = ms_since(started);
+                    record_outcome(&span, &record);
+                    pending.emit(&record);
+                    return Ok(status_response(StatusCode::BAD_GATEWAY));
+                }
+            }
+        }
         Err(message) => {
             record.action = Action::Error;
             record.status_code = Some(502);
@@ -677,6 +785,12 @@ async fn handle(
             record_outcome(&span, &record);
             pending.emit(&record);
 
+            // Return the connection for reuse (Part 07 §4). Only the
+            // forward path checks in: an upgrade consumed the socket, and
+            // a replaced/errored response leaves an unread upstream body,
+            // which hyper resolves by closing the connection.
+            runtime.pool.checkin(pooled);
+
             let (mut parts, body) = upstream_response.into_parts();
             let mut resp_headers: Vec<(String, String)> = parts
                 .headers
@@ -728,28 +842,15 @@ async fn handle(
     }
 }
 
-async fn send_upstream<IO>(
-    stream: IO,
+/// Send on a (possibly reused) pooled sender. The connection task and
+/// handshake live in `pool::acquire`; this only applies the response-header
+/// timeout (Part 07 §4).
+async fn send_upstream(
+    pooled: &mut PooledSender,
     req: Request<OutBody>,
     header_timeout: std::time::Duration,
-) -> Result<Response<Incoming>, String>
-where
-    IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    let io = TokioIo::new(stream);
-    let (mut sender, conn) = hyper::client::conn::http1::Builder::new()
-        // Replay the original header-name casing recorded on the request
-        // parts (Part 02 §5).
-        .preserve_header_case(true)
-        .handshake(io)
-        .await
-        .map_err(|e| format!("upstream handshake: {e}"))?;
-    // with_upgrades so a 101 hands the upstream socket to `upgrade::on`
-    // for the WebSocket byte copy (Part 05 §5).
-    tokio::spawn(async move {
-        let _ = conn.with_upgrades().await;
-    });
-    match tokio::time::timeout(header_timeout, sender.send_request(req)).await {
+) -> Result<Response<Incoming>, String> {
+    match tokio::time::timeout(header_timeout, pooled.sender.send_request(req)).await {
         Ok(Ok(resp)) => Ok(resp),
         Ok(Err(e)) => Err(format!("upstream request: {e}")),
         Err(_) => Err("upstream response header timeout".into()),

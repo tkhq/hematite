@@ -22,6 +22,8 @@ use crate::audit::{AuditSink, Level};
 #[derive(Debug, Clone, Copy)]
 pub enum DialResult {
     Ok,
+    /// An idle pooled connection was reused instead of dialing (Part 07 §4).
+    Reused,
     GuardDenied,
     DnsError,
     ConnectError,
@@ -32,6 +34,7 @@ impl DialResult {
     fn as_str(self) -> &'static str {
         match self {
             DialResult::Ok => "ok",
+            DialResult::Reused => "reused",
             DialResult::GuardDenied => "guard-denied",
             DialResult::DnsError => "dns-error",
             DialResult::ConnectError => "connect-error",
