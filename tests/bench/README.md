@@ -1,9 +1,10 @@
-# tests/bench — hematite vs iron-proxy
+# tests/bench — egress-proxy benchmark
 
-A docker-compose harness that compares hematite (built from this tree)
-against iron-proxy (`ironsh/iron-proxy:0.49.0`) on four axes: MITM'd-HTTPS
-performance via CONNECT, a realistic AI-agent workload, operational
-footprint, and security conformance.
+A docker-compose harness that compares five egress proxies — hematite
+(built from this tree), iron-proxy 0.49.0, Squid 6 (ssl-bump), mitmproxy
+11.1.3, and smokescreen v0.0.4 — on four axes: MITM'd-HTTPS performance
+via CONNECT, a realistic AI-agent workload, operational footprint, and
+security conformance.
 Results and tradeoffs are written up in [COMPARISON.md](COMPARISON.md).
 Design doc: `docs/superpowers/specs/2026-08-12-bench-vs-iron-proxy-design.md`.
 
