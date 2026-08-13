@@ -42,6 +42,12 @@ match hostnames; resolution-time IP control is the guard's job (Part 07).
 Bare IPs without a prefix length MUST be rejected at config load — write
 `/32` (or `/128`) explicitly.
 
+An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) routes as IPv4, so it MUST
+match every prefix its canonical IPv4 form matches, in addition to any IPv6
+prefix that contains the literal form. This applies everywhere a CIDR is
+evaluated, including the guard's deny prefixes (Part 07 §2) — an AAAA
+record must not carry a denied address past an IPv4 deny rule (threat T2).
+
 ## 4. Path globs
 
 - Patterns match the raw, still-percent-encoded path (Part 01 §1).

@@ -459,10 +459,13 @@ async fn handle(
         outcome,
         request_traces,
         body_capture,
+        request_path,
     } = runtime.pipeline.evaluate_request(&mut summary);
 
-    // A record template carrying everything the request path produced.
-    let mut record = base_record(&ctx, &summary.host, &method, &summary.path, Action::Allow);
+    // A record template carrying everything the request path produced. The
+    // path is the pre-transform snapshot: a match_path secrets swap writes
+    // the real credential into summary.path (Part 08 §3, INV-1).
+    let mut record = base_record(&ctx, &summary.host, &method, &request_path, Action::Allow);
     record.request_transforms = request_traces;
     record.body_capture = body_capture;
 

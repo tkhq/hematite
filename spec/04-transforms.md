@@ -48,6 +48,12 @@ Observation-only header capture for audit enrichment. Never rejects.
 - Captured values land in the audit log in plain text; the config docs MUST
   carry the operator warning to never annotate headers holding real secrets.
   (Proxy tokens are fine — they are worthless outside the boundary.)
+- Validation MUST refuse to load a config where an `annotate` group captures a
+  header that a **preceding** `secrets` entry may swap (its `match_headers`
+  covers the name, or is absent/empty = all headers). Captured after the swap,
+  the annotation would hold the resolved credential, which no record field may
+  contain (Part 08 §3). This is the same class as the `body_capture` ordering
+  rule (§6). The recommended order (§6) places `annotate` before `secrets`.
 - Response: `Continue`, no annotations.
 
 ## 3. `secrets` (L3)
@@ -83,6 +89,10 @@ swaps in real values at egress. This is the transform INV-1 exists for.
 - Every source accepts an optional `json_key`: parse the resolved value as a
   JSON object and extract the named top-level string field. Anything else —
   non-JSON, a missing key, a non-string value — is a resolution failure.
+- The resolution cache MUST key on the source's full identity — kind, name,
+  and `json_key` — never the name alone. Two secrets reading different
+  `json_key`s from one file are different secrets; a shared entry would
+  serve one secret's value for the other.
 - Resolution failures follow `require` (§3.3); the error text MUST name the
   source, never the value (INV-1).
 
@@ -174,11 +184,19 @@ Observation-only request-body recording.
 - Never rejects; a body read error is annotated (`error` key in annotations),
   not fatal.
 - Response bodies are not captured (SSE would stall; Part 10).
-- Ordering note: place `body_capture` **before** any `secrets` entry that has
-  `match_body: true`, so the log holds proxy tokens, not real credentials.
+- Ordering rule: `body_capture` MUST come **before** any `secrets` entry that
+  has `match_body: true`, so the log holds proxy tokens, not real credentials.
+  The reverse order is a load error (§6).
 
 ## 6. Ordering summary (informative)
 
 Recommended order: `allowlist`, `annotate`, `body_capture`, `secrets`,
-`header_allowlist`. Validation MUST warn when `body_capture` follows a
-`secrets` entry that has `match_body: true`.
+`header_allowlist`. Validation MUST refuse to load a config where a record-
+writing observer follows a `secrets` entry that may swap the data it records
+— the log would hold the swapped-in real credential, which no record field
+may contain (Part 08 §3). Concretely:
+
+- `body_capture` after a `secrets` entry with `match_body: true`.
+- `annotate` capturing a header a preceding `secrets` entry may swap (§2).
+
+Both are load errors, not warnings.

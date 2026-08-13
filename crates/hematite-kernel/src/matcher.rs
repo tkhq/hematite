@@ -108,7 +108,20 @@ impl Cidr {
         Ok(Cidr { net, prefix })
     }
 
+    /// An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) routes as IPv4, so
+    /// it must match the prefixes its canonical IPv4 form matches — an
+    /// AAAA record must not carry a denied address past an IPv4 rule.
+    /// The check also runs on the literal form, so an explicit v6 prefix
+    /// covering the mapped range still applies.
     pub fn contains(&self, ip: IpAddr) -> bool {
+        if self.contains_literal(ip) {
+            return true;
+        }
+        let canonical = ip.to_canonical();
+        canonical != ip && self.contains_literal(canonical)
+    }
+
+    fn contains_literal(&self, ip: IpAddr) -> bool {
         match (self.net, ip) {
             (IpAddr::V4(net), IpAddr::V4(ip)) => {
                 let mask = if self.prefix == 0 {

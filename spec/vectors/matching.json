@@ -16,6 +16,10 @@
     { "cidr": "10.0.0.0/8", "host": "11.0.0.1", "match": false },
     { "cidr": "10.0.0.0/8", "host": "internal.corp", "match": false, "$comment": "hostnames never match CIDRs" },
     { "cidr": "169.254.169.254/32", "host": "169.254.169.254", "match": true },
+    { "cidr": "169.254.169.254/32", "host": "::ffff:169.254.169.254", "match": true, "$comment": "IPv4-mapped IPv6 form of a denied IPv4 address must match (threat T2)" },
+    { "cidr": "127.0.0.0/8", "host": "::ffff:127.0.0.1", "match": true },
+    { "cidr": "10.0.0.0/8", "host": "::ffff:11.0.0.1", "match": false, "$comment": "canonicalization must not over-match" },
+    { "cidr": "::1/128", "host": "::1", "match": true },
     { "cidr": "10.0.0.1", "config_error": true, "$comment": "bare IP without prefix length" }
   ],
   "path_globs": [
