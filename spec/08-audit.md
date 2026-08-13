@@ -48,6 +48,10 @@ Field rules:
   pre-pipeline rejections (400s, SNI-less closes — status code as observed),
   or `"guard"` for deny-CIDR dial denials (status 502, with the `guard`
   group; Part 07 §2). All rejections log at WARN.
+- `path` is the request path as received from the client, snapshotted
+  before any transform ran — a `match_path` secrets swap rewrites the
+  resolved credential into the wire path, and that value MUST NOT appear
+  in the record (§3).
 - `host` is the empty string only when the failure precedes host extraction
   (`rejected_by: "listener"`); it is non-empty everywhere else.
 - `sni` present only on TLS legs; `tunnel` only for in-tunnel requests

@@ -44,6 +44,11 @@ pub struct PipelineOutcome {
     pub outcome: Outcome,
     pub request_traces: Vec<Trace>,
     pub body_capture: Option<BodyCapture>,
+    /// The request path as the client sent it, snapshotted before any
+    /// transform ran. Audit records MUST use this, never the post-pipeline
+    /// summary path: a `match_path` secrets swap rewrites the resolved
+    /// credential into the wire path (Part 08 §3, INV-1).
+    pub request_path: String,
 }
 
 /// Per-invocation context handed to a transform (Part 03 §4). Annotations
@@ -115,6 +120,8 @@ impl Pipeline {
     pub fn evaluate_request(&self, req: &mut RequestSummary) -> PipelineOutcome {
         let mut traces = Vec::with_capacity(self.transforms.len());
         let mut body_capture = None;
+        // Snapshotted before any transform can rewrite it (INV-1).
+        let request_path = req.path.clone();
 
         for t in &self.transforms {
             let mut ctx = Ctx::default();
@@ -142,6 +149,7 @@ impl Pipeline {
                         },
                         request_traces: traces,
                         body_capture,
+                        request_path,
                     };
                 }
                 Ok(Verdict::Stub(response)) => {
@@ -153,6 +161,7 @@ impl Pipeline {
                         },
                         request_traces: traces,
                         body_capture,
+                        request_path,
                     };
                 }
                 Err(TransformError(message)) => {
@@ -169,6 +178,7 @@ impl Pipeline {
                         },
                         request_traces: traces,
                         body_capture,
+                        request_path,
                     };
                 }
             }
@@ -178,6 +188,7 @@ impl Pipeline {
             outcome: Outcome::Continue(AllowProof { _sealed: () }),
             request_traces: traces,
             body_capture,
+            request_path,
         }
     }
 }

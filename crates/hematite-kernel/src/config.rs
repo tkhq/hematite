@@ -383,8 +383,10 @@ fn build_pipeline_inner(
     if allowlist_pos != Some(0) {
         warnings.push("allowlist is present but not first in the pipeline (Part 04 §1)".into());
     }
-    // Part 04 §6: body_capture must precede a body-matching secrets entry.
-    body_capture_ordering_lint(specs, &mut warnings);
+    // Part 04 §6: body_capture must precede a body-matching secrets entry;
+    // captured post-swap, the log would hold the real credential (Part 08
+    // §3, INV-1). Refuse to load, not warn.
+    body_capture_ordering(specs)?;
 
     let transforms = specs
         .iter()
@@ -396,9 +398,10 @@ fn build_pipeline_inner(
     })
 }
 
-/// Warn when `body_capture` follows a `secrets` entry with
-/// `match_body: true` (Part 04 §6, 09 §3).
-fn body_capture_ordering_lint(specs: &[TransformSpec], warnings: &mut Vec<String>) {
+/// Refuse a pipeline where `body_capture` follows a `secrets` entry with
+/// `match_body: true` (Part 04 §6): the capture would hold the swapped-in
+/// real credential, which no record field may contain (Part 08 §3).
+fn body_capture_ordering(specs: &[TransformSpec]) -> Result<(), ConfigError> {
     let body_matching_secrets = specs.iter().position(|s| {
         s.name == "secrets"
             && s.config
@@ -413,11 +416,13 @@ fn body_capture_ordering_lint(specs: &[TransformSpec], warnings: &mut Vec<String
     let body_capture_pos = specs.iter().position(|s| s.name == "body_capture");
     if let (Some(secrets_i), Some(capture_i)) = (body_matching_secrets, body_capture_pos) {
         if capture_i > secrets_i {
-            warnings.push(
+            return Err(ConfigError(
                 "body_capture follows a secrets entry with match_body: true; \
-                 the log will hold real credentials (Part 04 §6)"
+                 the log would hold real credentials — move body_capture \
+                 before the secrets entry (Part 04 §6, Part 08 §3)"
                     .into(),
-            );
+            ));
         }
     }
+    Ok(())
 }

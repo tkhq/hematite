@@ -105,7 +105,9 @@ pub fn conformance_record(summary: &RequestSummary, outcome: &PipelineOutcome) -
     AuditRecord {
         host: summary.host.clone(),
         method: summary.method.clone(),
-        path: summary.path.clone(),
+        // The pre-transform snapshot, never the post-swap summary path
+        // (Part 08 §3, INV-1).
+        path: outcome.request_path.clone(),
         remote_addr: summary.remote_addr.clone(),
         sni: summary.sni.clone(),
         mode: summary.mode,

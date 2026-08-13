@@ -178,11 +178,14 @@ Observation-only request-body recording.
 - Never rejects; a body read error is annotated (`error` key in annotations),
   not fatal.
 - Response bodies are not captured (SSE would stall; Part 10).
-- Ordering note: place `body_capture` **before** any `secrets` entry that has
-  `match_body: true`, so the log holds proxy tokens, not real credentials.
+- Ordering rule: `body_capture` MUST come **before** any `secrets` entry that
+  has `match_body: true`, so the log holds proxy tokens, not real credentials.
+  The reverse order is a load error (§6).
 
 ## 6. Ordering summary (informative)
 
 Recommended order: `allowlist`, `annotate`, `body_capture`, `secrets`,
-`header_allowlist`. Validation MUST warn when `body_capture` follows a
-`secrets` entry that has `match_body: true`.
+`header_allowlist`. Validation MUST refuse to load a config where
+`body_capture` follows a `secrets` entry that has `match_body: true` — the
+capture would hold the swapped-in real credential, which no record field
+may contain (Part 08 §3).
