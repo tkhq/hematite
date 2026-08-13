@@ -44,6 +44,9 @@ struct PrivateUpstream {
 }
 
 async fn spawn_private_tls_upstream(name: &str) -> PrivateUpstream {
+    // Tests run in parallel; whichever touches rustls first must have
+    // installed the process provider (idempotent).
+    install_crypto_provider();
     let mut ca_params = rcgen::CertificateParams::new(Vec::new()).unwrap();
     ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     ca_params
