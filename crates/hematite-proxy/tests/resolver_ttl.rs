@@ -67,6 +67,59 @@ fn file_ttl_refresh_failure_and_stale_serve() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+// Two secrets reading different `json_key`s from one file are different
+// secrets and must not share a cache entry — otherwise service A's key is
+// served (and swapped into requests) for service B. The value itself is
+// unobservable (INV-1), so the tests assert through ok/err asymmetry.
+
+#[test]
+fn json_keys_from_one_file_do_not_share_a_cache_entry() {
+    let dir = std::env::temp_dir().join(format!("hematite-jsonkey-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("creds.json");
+    std::fs::write(&path, r#"{"service_a": "ka"}"#).unwrap();
+
+    let resolver = EnvFileResolver::default();
+    let mut src_a = file_source(path.to_str().unwrap(), None, None);
+    src_a.json_key = Some("service_a".into());
+    let mut src_b = file_source(path.to_str().unwrap(), None, None);
+    src_b.json_key = Some("service_b".into());
+
+    // A resolves and caches; B's key is absent from the file, so B must
+    // fail — a cache entry keyed on the path alone would serve A's value.
+    assert!(resolver.resolve(&src_a).is_ok(), "service_a resolves");
+    assert!(
+        resolver.resolve(&src_b).is_err(),
+        "service_b must not receive service_a's cached value"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn env_and_file_sources_with_the_same_name_stay_distinct() {
+    // An env var whose name equals a (nonexistent) file path: resolving
+    // the env source must not populate a cache entry the file source hits.
+    let name = "/no/such/hematite/dir/HEMATITE_SAME_NAME_TOKEN";
+    std::env::set_var(name, "env-value");
+    let resolver = EnvFileResolver::default();
+
+    let env_src = SourceRef {
+        kind: SourceKind::Env { var: name.into() },
+        json_key: None,
+        ttl: None,
+        failure_ttl: None,
+    };
+    let file_src = file_source(name, None, None);
+
+    assert!(resolver.resolve(&env_src).is_ok(), "env resolves");
+    assert!(
+        resolver.resolve(&file_src).is_err(),
+        "the file does not exist; the env value must not be served for it"
+    );
+    std::env::remove_var(name);
+}
+
 #[test]
 fn failure_is_cached_then_retried() {
     let clock = Arc::new(AtomicU64::new(0));

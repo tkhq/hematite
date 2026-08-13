@@ -39,7 +39,23 @@ impl Clock for MonotonicClock {
     }
 }
 
-/// One cache entry per source name.
+/// The cache key: the full identity of a source, not just its name. Two
+/// secrets reading different `json_key`s from one file are different
+/// secrets; keying on the path alone would serve one secret's value for
+/// the other. The kind tag keeps an env var distinct from a file path
+/// that spells the same string.
+fn cache_key(source: &SourceRef) -> String {
+    let base = match &source.kind {
+        SourceKind::Env { var } => format!("env:{var}"),
+        SourceKind::File { path } => format!("file:{path}"),
+    };
+    match &source.json_key {
+        Some(key) => format!("{base}\u{0}{key}"),
+        None => base,
+    }
+}
+
+/// One cache entry per source identity (`cache_key`).
 struct Entry {
     /// The last successfully resolved value, if any (kept for stale-serve).
     value: Option<Vec<u8>>,
@@ -117,7 +133,7 @@ fn apply_json_key(value: Vec<u8>, source: &SourceRef) -> Result<Vec<u8>, Resolve
 impl SecretResolver for EnvFileResolver {
     fn resolve(&self, source: &SourceRef) -> Result<Secret, ResolveError> {
         let now = self.clock.now_ms();
-        let name = source.name().to_string();
+        let name = cache_key(source);
         let ttl_ms = source.ttl.map(|d| d.as_millis() as u64);
         let failure_ttl_ms = source
             .failure_ttl

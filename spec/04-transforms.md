@@ -83,6 +83,10 @@ swaps in real values at egress. This is the transform INV-1 exists for.
 - Every source accepts an optional `json_key`: parse the resolved value as a
   JSON object and extract the named top-level string field. Anything else —
   non-JSON, a missing key, a non-string value — is a resolution failure.
+- The resolution cache MUST key on the source's full identity — kind, name,
+  and `json_key` — never the name alone. Two secrets reading different
+  `json_key`s from one file are different secrets; a shared entry would
+  serve one secret's value for the other.
 - Resolution failures follow `require` (§3.3); the error text MUST name the
   source, never the value (INV-1).
 
