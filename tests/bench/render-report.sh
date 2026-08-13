@@ -10,10 +10,29 @@ med() {
   jq -s "map($3) | sort | .[(length/2|floor)]" results/perf-"$1"-"$2"-*.json 2>/dev/null || echo null
 }
 
-# stat_agg <target> <field> <agg>: aggregate across all stats files for a target
+# stat_agg <target> <field> <agg>: aggregate across the PERF suite's stats
+# files only (fixed + max kinds) — agent-suite samples live in
+# stats-agent-*.jsonl and are reported per phase in their own section.
 stat_agg() {
-  cat results/stats-"$1"-*.jsonl 2>/dev/null \
+  cat results/stats-"$1"-fixed-*.jsonl results/stats-"$1"-max-*.jsonl 2>/dev/null \
     | jq -s "map(.$2) | if length==0 then null else ($3) end" 2>/dev/null || echo null
+}
+
+# agent_val <target> <phase> <class> <field>
+agent_val() {
+  jq -r ".$2.classes.\"$3\".$4 // \"null\"" "results/agent-$1.json" 2>/dev/null || echo null
+}
+
+# agent_stat <target> <phase> <field> <agg>: docker-stats aggregate windowed
+# to the phase's [start, end] epoch range.
+agent_stat() {
+  local t=$1 phase=$2 field=$3 agg=$4 s e
+  s=$(jq -r ".$phase.start_epoch_ms // empty" "results/agent-$t.json" 2>/dev/null)
+  e=$(jq -r ".$phase.end_epoch_ms // empty" "results/agent-$t.json" 2>/dev/null)
+  if [[ -z "$s" || -z "$e" ]]; then echo null; return; fi
+  jq -s --argjson s "$s" --argjson e "$e" \
+    "map(select(.ts >= \$s and .ts <= \$e) | .$field) | if length==0 then null else ($agg) end" \
+    "results/stats-agent-$t.jsonl" 2>/dev/null || echo null
 }
 
 # fmt_num <value> <format>: printf-format a jq number, printing '-' if null
@@ -102,6 +121,59 @@ fmt_num() {
         results/footprint.json
     else
       echo "| (footprint ERRORED) | | | | |"
+    fi
+  fi
+
+  if [[ "$SUITE" == all || "$SUITE" == agent ]]; then
+    echo
+    echo "## Agent workload (realistic AI-agent sessions)"
+    echo
+    if [[ -f results/agent-baseline.json ]]; then
+      jq -r '.profile |
+        "Sessions: chat POST (\(.chat_body_bytes_min/1024|round)-\(.chat_body_bytes_max/1024|round)KB body, secret swap) with SSE response streamed at \(1000/.sse_interval_ms|round) chunks/s for \(.sse_chunks_min*.sse_interval_ms/1000)-\(.sse_chunks_max*.sse_interval_ms/1000)s, then \(.tool_calls_per_session) parallel tool GETs; \(.denied_probability*100|round)% of sessions also hit a denied host. Open-loop Poisson arrivals: steady \(.steady_secs)s @ \(.steady_sessions_per_min)/min, then burst \(.burst_secs)s @ \(.burst_multiplier)x."' \
+        results/agent-baseline.json
+      echo
+      for phase in steady burst; do
+        echo "### ${phase} phase"
+        echo
+        echo "| metric | baseline | hematite | iron-proxy |"
+        echo "|---|---|---|---|"
+        row() { # row <label> <class> <field> <fmt>
+          local label=$1 class=$2 field=$3 fmt=$4 vals=""
+          for t in baseline hematite iron; do
+            vals="$vals | $(fmt_num "$(agent_val "$t" "$phase" "$class" "$field")" "$fmt")"
+          done
+          echo "| $label$vals |"
+        }
+        row "sessions launched (chat count)" chat count "%.0f"
+        row "chat total p50 ms" chat p50_ms "%.0f"
+        row "chat total p99 ms" chat p99_ms "%.0f"
+        row "TTFT p50 ms" chat_ttft p50_ms "%.1f"
+        row "TTFT p99 ms" chat_ttft p99_ms "%.1f"
+        row "SSE max-stall p99 ms" chat_stall p99_ms "%.1f"
+        row "tool call p50 ms" tool p50_ms "%.2f"
+        row "tool call p99 ms" tool p99_ms "%.2f"
+        row "denied-request p50 ms" denied p50_ms "%.2f"
+        row "chat errors" chat errors "%.0f"
+        row "tool errors" tool errors "%.0f"
+        row "denied errors" denied errors "%.0f"
+        # Proxy resource use windowed to this phase.
+        cpu_h=$(agent_stat hematite "$phase" cpu_pct 'add/length')
+        cpu_i=$(agent_stat iron "$phase" cpu_pct 'add/length')
+        mem_h=$(agent_stat hematite "$phase" mem_mib 'max')
+        mem_i=$(agent_stat iron "$phase" mem_mib 'max')
+        echo "| proxy CPU% mean | - | $(fmt_num "$cpu_h" "%.1f") | $(fmt_num "$cpu_i" "%.1f") |"
+        echo "| proxy RSS MiB max | - | $(fmt_num "$mem_h" "%.1f") | $(fmt_num "$mem_i" "%.1f") |"
+        echo
+      done
+      echo "Notes: TTFT = time to first SSE chunk; max-stall = worst gap"
+      echo "between consecutive SSE chunks in a session (streaming smoothness"
+      echo "through the proxy). Denied-request latency is the time to a"
+      echo "definitive policy refusal (N/A for baseline: no policy). The mock"
+      echo "LLM paces chunks server-side, so chat totals mostly measure the"
+      echo "stream duration; TTFT, stalls, and tool latency carry the signal."
+    else
+      echo "(agent suite ERRORED or not run)"
     fi
   fi
 

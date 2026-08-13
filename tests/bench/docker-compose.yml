@@ -58,6 +58,20 @@ services:
       bench:
         ipv4_address: 172.28.0.3
 
+  # Mock LLM upstream for the agent-traffic suite: same image as loadgen,
+  # running `agentbench serve` (SSE chat streaming + tool endpoint).
+  llm:
+    build:
+      context: .
+      dockerfile: loadgen.Dockerfile
+    command: ["agentbench", "serve"]
+    volumes:
+      - ./certs:/certs:ro
+    networks:
+      bench:
+        ipv4_address: 172.28.0.12
+        aliases: [llm.test]
+
   loadgen:
     build:
       context: .

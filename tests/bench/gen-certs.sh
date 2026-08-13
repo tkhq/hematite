@@ -11,7 +11,11 @@ printf '{"pad":"%s"}\n' "$(head -c 1000 /dev/zero | tr '\0' 'x')" > www/1k.json
 mkdir -p certs
 cd certs
 if [[ -f ca.crt && "${1:-}" != "--force" ]]; then
-  echo "certs already present (use --force to regenerate)"; exit 0
+  # Regenerate when the leaf predates the llm.test SAN (agent suite).
+  if openssl x509 -in echo.crt -noout -text | grep -q "llm.test"; then
+    echo "certs already present (use --force to regenerate)"; exit 0
+  fi
+  echo "certs present but leaf lacks llm.test SAN; regenerating"
 fi
 
 # CA. rcgen needs a PKCS#8 key, so convert from openssl's SEC1 output.
@@ -28,7 +32,7 @@ openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 \
 openssl ecparam -name prime256v1 -genkey -noout -out echo.key
 openssl req -new -key echo.key -subj "/CN=bench upstream" -out echo.csr
 cat > echo.ext <<'EXT'
-subjectAltName=DNS:upstream.test,DNS:denied.test,DNS:stream.test,DNS:localhost
+subjectAltName=DNS:upstream.test,DNS:denied.test,DNS:stream.test,DNS:llm.test,DNS:localhost
 extendedKeyUsage=serverAuth
 EXT
 openssl x509 -req -in echo.csr -CA ca.crt -CAkey ca.key -CAcreateserial \

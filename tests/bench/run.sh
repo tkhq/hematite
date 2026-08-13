@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-command benchmark: hematite vs iron-proxy.
-# Usage: ./run.sh [all|perf|footprint|conformance]     QUICK=1 for a smoke run.
+# Usage: ./run.sh [all|perf|footprint|agent|conformance]   QUICK=1 for a smoke run.
 #
 # Hardware signing token unavailable in CI; commits use -c commit.gpgsign=false.
 set -uo pipefail
@@ -49,6 +49,9 @@ if [[ "$SUITE" == all || "$SUITE" == footprint ]]; then
 fi
 if [[ "$SUITE" == all || "$SUITE" == perf ]]; then
   runsuite perf ./bench-perf.sh
+fi
+if [[ "$SUITE" == all || "$SUITE" == agent ]]; then
+  runsuite agent ./bench-agent.sh
 fi
 if [[ "$SUITE" == all || "$SUITE" == conformance ]]; then
   docker compose logs hematite > results/hematite-preconf.log 2>&1

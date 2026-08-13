@@ -19,6 +19,7 @@ transforms:
       domains:
         - "upstream.test"
         - "stream.test"
+        - "llm.test"
         - "imds-test.local"
 
   - name: secrets
@@ -29,6 +30,7 @@ transforms:
           match_headers: ["Authorization"]
           rules:
             - host: "upstream.test"
+            - host: "llm.test"
 
 management:
   listen: "0.0.0.0:9092"

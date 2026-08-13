@@ -19,6 +19,7 @@ transforms:
       domains:
         - "upstream.test"
         - "stream.test"
+        - "llm.test"
         - "imds-test.local"
 
   - name: secrets
@@ -33,6 +34,7 @@ transforms:
             match_body: false
           rules:
             - host: "upstream.test"
+            - host: "llm.test"
 
 log:
   level: "info"
