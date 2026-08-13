@@ -230,3 +230,70 @@ transforms:
     let config = load_str(yaml, &no_env).expect("config loads");
     assert!(config.warnings.iter().any(|w| w.contains("not first")));
 }
+
+#[test]
+fn passthrough_domains_parse_and_compile() {
+    let yaml = r#"
+proxy:
+  tunnel_passthrough_domains: ["telemetry.example.com", "*.blind.example"]
+transforms:
+  - name: allowlist
+    config: { domains: ["api.example.com", "telemetry.example.com"] }
+"#;
+    let config = load_str(yaml, &no_env).expect("config loads");
+    assert_eq!(config.tunnel_passthrough_domains.len(), 2);
+    let runtime = hematite_proxy::config::build_runtime(&config).expect("runtime builds");
+    assert!(runtime.passthrough_matches("telemetry.example.com"));
+    assert!(runtime.passthrough_matches("deep.blind.example"));
+    assert!(!runtime.passthrough_matches("api.example.com"));
+}
+
+#[test]
+fn passthrough_overlapping_transform_rule_is_a_load_error() {
+    // A secrets rule scoped to a passthrough host could never run: the
+    // tunnel is spliced, so the transform pipeline never sees the traffic.
+    // That must refuse to boot, not warn (Part 05 §4.4).
+    let yaml = r#"
+proxy:
+  tunnel_passthrough_domains: ["api.example.com"]
+transforms:
+  - name: allowlist
+    config: { domains: ["api.example.com"] }
+  - name: secrets
+    config:
+      secrets:
+        - source: { type: env, var: KEY }
+          proxy_value: "proxy-tok"
+          match_headers: ["Authorization"]
+          rules:
+            - host: "api.example.com"
+"#;
+    let config = load_str(yaml, &no_env).expect("schema-valid config loads");
+    let err = hematite_proxy::config::build_runtime(&config)
+        .err()
+        .expect("overlap must be a load error");
+    assert!(
+        err.to_string().contains("passthrough"),
+        "error names the conflict: {err}"
+    );
+}
+
+#[test]
+fn passthrough_glob_overlap_is_caught_both_directions() {
+    // The transform rule is broader than the passthrough entry: the glob
+    // matches the passthrough domain, so the overlap check must fire.
+    let yaml = r#"
+proxy:
+  tunnel_passthrough_domains: ["api.example.com"]
+transforms:
+  - name: allowlist
+    config: { domains: ["*.example.com"] }
+  - name: header_allowlist
+    config:
+      headers: ["Host"]
+      rules:
+        - host: "*.example.com"
+"#;
+    let config = load_str(yaml, &no_env).expect("schema-valid config loads");
+    assert!(hematite_proxy::config::build_runtime(&config).is_err());
+}

@@ -178,6 +178,99 @@ pub fn sniff_inner(first_byte: u8) -> InnerProtocol {
     }
 }
 
+/// Result of scanning buffered inner bytes for a TLS ClientHello SNI
+/// (Part 05 §4.4 — the passthrough SNI/target check, threat T6).
+#[derive(Debug, PartialEq, Eq)]
+pub enum SniScan {
+    /// Not enough bytes buffered yet to decide.
+    Incomplete,
+    /// A complete ClientHello with no server_name extension (or one this
+    /// scanner cannot see, e.g. a ClientHello spanning TLS records). The
+    /// caller treats this as "no name to check", not as a mismatch.
+    NoSni,
+    /// The server_name the client asked for.
+    Sni(String),
+    /// The bytes are not a parseable TLS handshake record.
+    NotTls,
+}
+
+/// Extract the SNI from the first TLS record of a buffered ClientHello.
+/// Pure and total: never panics on arbitrary input.
+pub fn scan_client_hello_sni(buf: &[u8]) -> SniScan {
+    // TLS record header: type(1)=0x16 version(2) length(2).
+    if buf.len() < 5 {
+        return SniScan::Incomplete;
+    }
+    if buf[0] != 0x16 {
+        return SniScan::NotTls;
+    }
+    let record_len = u16::from_be_bytes([buf[3], buf[4]]) as usize;
+    let record = match buf.get(5..5 + record_len) {
+        Some(r) => r,
+        None => return SniScan::Incomplete,
+    };
+    // Handshake header: type(1)=0x01 length(3).
+    if record.len() < 4 || record[0] != 0x01 {
+        return SniScan::NotTls;
+    }
+    let hs_len = u32::from_be_bytes([0, record[1], record[2], record[3]]) as usize;
+    let body = match record.get(4..) {
+        Some(b) if b.len() >= hs_len => &b[..hs_len],
+        // ClientHello continues in a later record; give up rather than
+        // reassemble (rare in practice, and NoSni fails open to the
+        // CONNECT-authority policy already applied).
+        Some(_) => return SniScan::NoSni,
+        None => return SniScan::NoSni,
+    };
+    // client_version(2) random(32).
+    let mut i = 34usize;
+    // session_id.
+    let Some(&sid_len) = body.get(i) else {
+        return SniScan::NotTls;
+    };
+    i += 1 + sid_len as usize;
+    // cipher_suites.
+    let Some(cs) = body.get(i..i + 2) else {
+        return SniScan::NotTls;
+    };
+    i += 2 + u16::from_be_bytes([cs[0], cs[1]]) as usize;
+    // compression_methods.
+    let Some(&comp_len) = body.get(i) else {
+        return SniScan::NotTls;
+    };
+    i += 1 + comp_len as usize;
+    // extensions.
+    let Some(ext_total) = body.get(i..i + 2) else {
+        return SniScan::NoSni; // no extensions block at all
+    };
+    let ext_end = i + 2 + u16::from_be_bytes([ext_total[0], ext_total[1]]) as usize;
+    i += 2;
+    while i + 4 <= ext_end.min(body.len()) {
+        let ext_type = u16::from_be_bytes([body[i], body[i + 1]]);
+        let ext_len = u16::from_be_bytes([body[i + 2], body[i + 3]]) as usize;
+        i += 4;
+        let Some(ext) = body.get(i..i + ext_len) else {
+            return SniScan::NoSni;
+        };
+        if ext_type == 0 {
+            // server_name list: list_len(2) name_type(1)=0 name_len(2) name.
+            if ext.len() < 5 || ext[2] != 0 {
+                return SniScan::NoSni;
+            }
+            let name_len = u16::from_be_bytes([ext[3], ext[4]]) as usize;
+            let Some(name) = ext.get(5..5 + name_len) else {
+                return SniScan::NoSni;
+            };
+            return match std::str::from_utf8(name) {
+                Ok(n) => SniScan::Sni(n.to_ascii_lowercase()),
+                Err(_) => SniScan::NoSni,
+            };
+        }
+        i += ext_len;
+    }
+    SniScan::NoSni
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,5 +366,78 @@ mod tests {
         assert_eq!(sniff_inner(0x16), InnerProtocol::Tls);
         assert_eq!(sniff_inner(b'G'), InnerProtocol::Http);
         assert_eq!(sniff_inner(0x05), InnerProtocol::Unknown);
+    }
+
+    /// Build a minimal ClientHello record with an optional SNI.
+    fn client_hello(sni: Option<&str>) -> Vec<u8> {
+        let mut ext = Vec::new();
+        if let Some(name) = sni {
+            let n = name.as_bytes();
+            let mut sni_ext = Vec::new();
+            sni_ext.extend_from_slice(&((n.len() + 3) as u16).to_be_bytes()); // list len
+            sni_ext.push(0); // name_type host_name
+            sni_ext.extend_from_slice(&(n.len() as u16).to_be_bytes());
+            sni_ext.extend_from_slice(n);
+            ext.extend_from_slice(&0u16.to_be_bytes()); // ext type server_name
+            ext.extend_from_slice(&(sni_ext.len() as u16).to_be_bytes());
+            ext.extend_from_slice(&sni_ext);
+        }
+        let mut body = Vec::new();
+        body.extend_from_slice(&[0x03, 0x03]); // client_version
+        body.extend_from_slice(&[0u8; 32]); // random
+        body.push(0); // session_id len
+        body.extend_from_slice(&2u16.to_be_bytes()); // cipher_suites len
+        body.extend_from_slice(&[0x13, 0x01]);
+        body.push(1); // compression len
+        body.push(0);
+        body.extend_from_slice(&(ext.len() as u16).to_be_bytes());
+        body.extend_from_slice(&ext);
+        let mut hs = vec![0x01];
+        hs.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
+        hs.extend_from_slice(&body);
+        let mut rec = vec![0x16, 0x03, 0x01];
+        rec.extend_from_slice(&(hs.len() as u16).to_be_bytes());
+        rec.extend_from_slice(&hs);
+        rec
+    }
+
+    #[test]
+    fn sni_scan_extracts_name() {
+        let hello = client_hello(Some("Upstream.TEST"));
+        assert_eq!(
+            scan_client_hello_sni(&hello),
+            SniScan::Sni("upstream.test".into())
+        );
+    }
+
+    #[test]
+    fn sni_scan_no_extension_is_nosni() {
+        assert_eq!(scan_client_hello_sni(&client_hello(None)), SniScan::NoSni);
+    }
+
+    #[test]
+    fn sni_scan_partial_record_is_incomplete() {
+        let hello = client_hello(Some("a.test"));
+        assert_eq!(scan_client_hello_sni(&hello[..3]), SniScan::Incomplete);
+        assert_eq!(
+            scan_client_hello_sni(&hello[..hello.len() - 1]),
+            SniScan::Incomplete
+        );
+    }
+
+    #[test]
+    fn sni_scan_non_tls_is_rejected() {
+        assert_eq!(
+            scan_client_hello_sni(b"GET / HTTP/1.1\r\n"),
+            SniScan::NotTls
+        );
+    }
+
+    #[test]
+    fn sni_scan_never_panics_on_truncations() {
+        let hello = client_hello(Some("fuzz.test"));
+        for cut in 0..hello.len() {
+            let _ = scan_client_hello_sni(&hello[..cut]);
+        }
     }
 }

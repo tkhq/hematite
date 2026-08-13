@@ -18,7 +18,7 @@ decision, not drift.
 | Response-retry handler | Complex trust delegation; needs its own threat analysis | Response-path hook after upstream, before response transforms | Appendix H.2 |
 | Cloud secret sources (AWS SM/SSM, 1Password) | SDK weight; `env`/`file` prove the source abstraction | `SecretSource` trait (Appendix E) | — (Appendix H "Not parked") |
 | OTEL export | Downstream of the stable JSON line format (Part 08 §4) | External collector, or "X-otel" emitter | — (Appendix H "Not parked") |
-| SNI-only passthrough mode | Halves the TLS story's complexity to defer; MITM is the product | `tls.mode` key, currently fixed to `mitm` | Appendix H.3 |
+| SNI-only passthrough mode | Superseded: per-domain tunnel passthrough shipped as Part 05 §4.4 (`proxy.tunnel_passthrough_domains`). A global no-MITM mode (`tls.mode`) remains out of scope | `tls.mode` key, currently fixed to `mitm` | Appendix H.3 |
 | Metrics endpoint, HTTP/3, warn-mode for transforms other than allowlist | Nice-to-haves | — | — |
 
 Appendices F–H are informative parking lots: enough design to keep each

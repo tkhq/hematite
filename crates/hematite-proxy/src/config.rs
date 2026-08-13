@@ -157,6 +157,10 @@ pub struct ProxySection {
     pub https_proxy: Option<String>,
     #[serde(default)]
     pub no_proxy: Option<String>,
+    /// Part 05 §4.4 — CONNECT/SOCKS5 targets matching these domain globs
+    /// are tunneled without TLS interception (spliced, not bumped).
+    #[serde(default)]
+    pub tunnel_passthrough_domains: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -239,6 +243,7 @@ pub struct Config {
     /// DNS server settings, when enabled (Part 06).
     pub dns: Option<DnsResolved>,
     pub transforms: Vec<TransformSpec>,
+    pub tunnel_passthrough_domains: Vec<String>,
     pub warnings: Vec<String>,
     pub observability: ObservabilitySection,
 }
@@ -544,6 +549,7 @@ pub fn load_str(yaml: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Conf
         tls,
         dns,
         transforms,
+        tunnel_passthrough_domains: raw.proxy.tunnel_passthrough_domains.unwrap_or_default(),
         warnings,
         observability: raw.observability,
     })
@@ -573,6 +579,44 @@ pub fn build_runtime_with_metrics(
     };
     let upstream_tls = native_upstream_config().map_err(LoadError)?;
 
+    // Part 05 §4.4 — compile the passthrough matcher and refuse configs
+    // where a transform rule could silently never apply because its host is
+    // tunneled without interception. A policy that cannot run is a load
+    // error, not a warning.
+    let tunnel_passthrough = config
+        .tunnel_passthrough_domains
+        .iter()
+        .map(|d| {
+            hematite_kernel::matcher::DomainGlob::parse(d)
+                .map_err(|e| LoadError(format!("proxy.tunnel_passthrough_domains {d:?}: {e}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if !tunnel_passthrough.is_empty() {
+        for spec in &config.transforms {
+            if spec.name == "allowlist" {
+                continue; // the allowlist still applies to the CONNECT itself
+            }
+            for host in transform_rule_hosts(&spec.config) {
+                for (glob, pattern) in tunnel_passthrough
+                    .iter()
+                    .zip(&config.tunnel_passthrough_domains)
+                {
+                    let host_glob = hematite_kernel::matcher::DomainGlob::parse(&host).ok();
+                    let overlap = glob.matches(&host)
+                        || host_glob.map(|g| g.matches(pattern)).unwrap_or(false);
+                    if overlap {
+                        return Err(LoadError(format!(
+                            "transform {:?} has a rule for host {:?}, which overlaps \
+                             tunnel passthrough domain {:?}: the transform could never \
+                             run on passthrough traffic",
+                            spec.name, host, pattern
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
     // Build the MITM cert cache when TLS is configured and an MITM listener
     // (https/tunnel) is enabled (Part 05 §3).
     let cert_cache = match &config.tls {
@@ -599,7 +643,37 @@ pub fn build_runtime_with_metrics(
         upstream_tls,
         cert_cache,
         metrics,
+        tunnel_passthrough,
     })
+}
+
+/// Every `"host"` string value anywhere inside a transform's JSON config —
+/// the generic shape shared by secrets/header_allowlist/annotate/body_capture
+/// rules (Part 04). Used for the passthrough-overlap load check.
+fn transform_rule_hosts(value: &serde_json::Value) -> Vec<String> {
+    let mut hosts = Vec::new();
+    fn walk(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::Object(map) => {
+                for (k, val) in map {
+                    if k == "host" {
+                        if let Some(s) = val.as_str() {
+                            out.push(s.to_string());
+                        }
+                    }
+                    walk(val, out);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    walk(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(value, &mut hosts);
+    hosts
 }
 
 /// The OS environment, as `load_str`'s `env` argument.

@@ -81,6 +81,7 @@ fn optional_groups_validate() {
     let mut tunnel = base(Action::Allow);
     tunnel.mode = Mode::Tunnel;
     tunnel.tunnel = Some(TunnelGroup {
+        passthrough: false,
         target: "api.example.com:443".into(),
         request_transforms: vec![trace("allowlist", TraceVerdict::Continue)],
     });

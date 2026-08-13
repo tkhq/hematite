@@ -290,6 +290,7 @@ fn base_record(ctx: &ConnCtx, host: &str, method: &str, path: &str, action: Acti
         tunnel: ctx.tunnel_target.as_ref().map(|target| TunnelGroup {
             target: target.clone(),
             request_transforms: ctx.tunnel_traces.clone(),
+            passthrough: false,
         }),
         guard: None,
         body_capture: None,

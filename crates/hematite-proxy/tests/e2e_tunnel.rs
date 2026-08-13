@@ -63,6 +63,7 @@ async fn spawn_tunnel_proxy(pipeline: hematite_kernel::pipeline::Pipeline) -> (u
         upstream_tls: hematite_proxy::state::native_upstream_config().unwrap(),
         cert_cache: None,
         metrics: hematite_proxy::metrics::Metrics::new("test"),
+        tunnel_passthrough: Vec::new(),
     };
     let state = SharedState::new(runtime);
     let sink = Arc::new(TestSink::default());
