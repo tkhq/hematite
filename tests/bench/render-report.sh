@@ -3,6 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 SUITE=${1:-all}
+. ./targets.sh
 OUT=results/REPORT.md
 
 # med <target> <kind> <jq-expr>: median across iteration files of a vegeta metric
@@ -47,16 +48,18 @@ fmt_num() {
 }
 
 {
-  echo "# hematite vs iron-proxy — benchmark report"
+  echo "# egress-proxy benchmark — hematite, iron-proxy, squid, mitmproxy, smokescreen"
   echo
   echo "> Numbers from docker-compose on a developer host support **relative**"
-  echo "> comparison between the two proxies only; they are not publishable"
-  echo "> absolute figures."
+  echo "> comparison between the proxies only; they are not publishable"
+  echo "> absolute figures. smokescreen is a non-MITM CONNECT proxy (a"
+  echo "> different class): it tunnels TLS blind, so it does less work per"
+  echo "> byte than the MITM proxies by design."
   echo
   echo "## Environment"
   echo '```'
   cat results/host-info.txt 2>/dev/null || echo "(host-info not recorded)"
-  echo "iron-proxy image: ironsh/iron-proxy:0.49.0"
+  echo "iron-proxy image: ironsh/iron-proxy:0.49.0 | squid: ubuntu 24.04 squid-openssl | mitmproxy: 11.1.3 | smokescreen: v0.0.4"
   echo "hematite: built from $(git rev-parse --short HEAD 2>/dev/null || echo 'local source')"
   echo '```'
   echo
@@ -71,7 +74,7 @@ fmt_num() {
     echo
     echo "| target | p50 | p90 | p99 | max RPS | success | CPU% mean | CPU% max | RSS MiB mean | RSS MiB max |"
     echo "|---|---|---|---|---|---|---|---|---|---|"
-    for t in baseline hematite iron; do
+    for t in $ALL_TARGETS; do
       p50=$(med "$t" fixed '.latencies."50th"/1e6')
       p90=$(med "$t" fixed '.latencies."90th"/1e6')
       p99=$(med "$t" fixed '.latencies."99th"/1e6')
@@ -99,7 +102,7 @@ fmt_num() {
     done
     echo
     base99=$(med baseline fixed '.latencies."99th"/1e6')
-    for t in hematite iron; do
+    for t in $PROXY_TARGETS; do
       t99=$(med "$t" fixed '.latencies."99th"/1e6')
       if [[ "$base99" == "null" || "$t99" == "null" ]]; then
         echo "- **$t p99 overhead vs baseline:** - (perf data unavailable)"
@@ -117,7 +120,7 @@ fmt_num() {
     echo "| target | image MB | binary MB | cold start ms | idle RSS MiB |"
     echo "|---|---|---|---|---|"
     if [[ -f results/footprint.json ]]; then
-      jq -r '.[] | "| \(.target) | \(.image_bytes/1e6|round) | \(.binary_bytes/1e6*100|round/100) | \(.cold_start_ms) | \(.idle_rss_mib) |"' \
+      jq -r '.[] | "| \(.target) | \(.image_bytes/1e6|round) | \(if .binary_bytes then (.binary_bytes/1e6*100|round/100) else "-" end) | \(.cold_start_ms) | \(.idle_rss_mib) |"' \
         results/footprint.json
     else
       echo "| (footprint ERRORED) | | | | |"
@@ -136,11 +139,13 @@ fmt_num() {
       for phase in steady burst; do
         echo "### ${phase} phase"
         echo
-        echo "| metric | baseline | hematite | iron-proxy |"
-        echo "|---|---|---|---|"
+        hdr="| metric"; sep="|---"
+        for t in $ALL_TARGETS; do hdr="$hdr | $t"; sep="$sep|---"; done
+        echo "$hdr |"
+        echo "$sep|"
         row() { # row <label> <class> <field> <fmt>
           local label=$1 class=$2 field=$3 fmt=$4 vals=""
-          for t in baseline hematite iron; do
+          for t in $ALL_TARGETS; do
             vals="$vals | $(fmt_num "$(agent_val "$t" "$phase" "$class" "$field")" "$fmt")"
           done
           echo "| $label$vals |"
@@ -158,12 +163,13 @@ fmt_num() {
         row "tool errors" tool errors "%.0f"
         row "denied errors" denied errors "%.0f"
         # Proxy resource use windowed to this phase.
-        cpu_h=$(agent_stat hematite "$phase" cpu_pct 'add/length')
-        cpu_i=$(agent_stat iron "$phase" cpu_pct 'add/length')
-        mem_h=$(agent_stat hematite "$phase" mem_mib 'max')
-        mem_i=$(agent_stat iron "$phase" mem_mib 'max')
-        echo "| proxy CPU% mean | - | $(fmt_num "$cpu_h" "%.1f") | $(fmt_num "$cpu_i" "%.1f") |"
-        echo "| proxy RSS MiB max | - | $(fmt_num "$mem_h" "%.1f") | $(fmt_num "$mem_i" "%.1f") |"
+        cpuline="| proxy CPU% mean | -"; memline="| proxy RSS MiB max | -"
+        for t in $PROXY_TARGETS; do
+          cpuline="$cpuline | $(fmt_num "$(agent_stat "$t" "$phase" cpu_pct 'add/length')" "%.1f")"
+          memline="$memline | $(fmt_num "$(agent_stat "$t" "$phase" mem_mib 'max')" "%.1f")"
+        done
+        echo "$cpuline |"
+        echo "$memline |"
         echo
       done
       echo "Notes: TTFT = time to first SSE chunk; max-stall = worst gap"
@@ -181,16 +187,20 @@ fmt_num() {
     echo
     echo "## Security conformance"
     echo
-    echo "| # | scenario | hematite | iron-proxy |"
-    echo "|---|---|---|---|"
+    hdr="| # | scenario"; sep="|---|---"
+    for p in $PROXY_TARGETS; do hdr="$hdr | $p"; sep="$sep|---"; done
+    echo "$hdr |"
+    echo "$sep|"
     for id in 1 2 3 4 5 6 7 8; do
       name=$(jq -rs --arg id "$id" '.[] | select(.id==$id) | .name' \
                results/conformance-hematite.jsonl 2>/dev/null | head -1)
-      h=$(jq -rs --arg id "$id" '.[] | select(.id==$id) | .result' \
-               results/conformance-hematite.jsonl 2>/dev/null | head -1)
-      i=$(jq -rs --arg id "$id" '.[] | select(.id==$id) | .result' \
-               results/conformance-iron.jsonl 2>/dev/null | head -1)
-      echo "| $id | ${name:-?} | ${h:-?} | ${i:-?} |"
+      line="| $id | ${name:-?}"
+      for p in $PROXY_TARGETS; do
+        r=$(jq -rs --arg id "$id" '.[] | select(.id==$id) | .result' \
+               "results/conformance-$p.jsonl" 2>/dev/null | head -1)
+        line="$line | ${r:-?}"
+      done
+      echo "$line |"
     done
     echo
     echo "Details per scenario are in \`results/conformance-*.jsonl\`."
@@ -198,7 +208,9 @@ fmt_num() {
 
   echo
   echo "## Configs under test (verbatim)"
-  for f in configs/hematite.yaml configs/hematite-conf.yaml configs/iron.yaml; do
+  for f in configs/hematite.yaml configs/hematite-conf.yaml configs/iron.yaml \
+           configs/squid.conf configs/mitm_allowlist.py \
+           configs/smokescreen.yaml configs/smokescreen-acl.yaml; do
     echo
     echo "### $f"
     echo '```yaml'

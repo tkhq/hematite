@@ -8,13 +8,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 mkdir -p results
-
-bin_path() {
-  case "$1" in
-    hematite) echo /usr/local/bin/hematite ;;
-    iron)     echo /usr/local/bin/iron-proxy ;;
-  esac
-}
+. ./targets.sh
 
 tmp=results/footprint-rows.jsonl
 : > "$tmp"
@@ -29,11 +23,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for t in hematite iron; do
+for t in $PROXY_TARGETS; do
   cid=$(docker compose ps -q "$t")
   img=$(docker inspect -f '{{.Image}}' "$cid")
   image_bytes=$(docker image inspect -f '{{.Size}}' "$img")
-  binary_bytes=$(docker compose exec -T "$t" sh -c "stat -c %s $(bin_path "$t")" | tr -d '[:space:]')
+  # No single binary (e.g. mitmproxy's Python dist) -> null in the report.
+  bin=$(target_bin "$t")
+  if [[ -n "$bin" ]]; then
+    binary_bytes=$(docker compose exec -T "$t" sh -c "stat -c %s $bin" | tr -d '[:space:]')
+  else
+    binary_bytes=null
+  fi
 
   # Cold start: poller (in-network, ~50ms resolution) races the restart.
   docker compose exec -T loadgen python3 /scripts/poll.py "$t:8080" > "results/cold-$t.txt" &

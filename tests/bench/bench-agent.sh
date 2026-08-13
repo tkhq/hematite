@@ -51,14 +51,15 @@ if [[ "$llm_ready" != 1 ]]; then
   exit 1
 fi
 
+. ./targets.sh
 fail=0
-for t in baseline hematite iron; do
+for t in baseline $PROXY_TARGETS; do
   proxy=""
   cid=""
-  case "$t" in
-    hematite) proxy="http://hematite:8080"; cid=$(docker compose ps -q hematite) ;;
-    iron)     proxy="http://iron:8080";     cid=$(docker compose ps -q iron) ;;
-  esac
+  if [[ "$t" != baseline ]]; then
+    proxy="http://$t:8080"
+    cid=$(docker compose ps -q "$t")
+  fi
   echo "=== agent suite: $t ==="
   if [[ -n "$cid" ]]; then
     sample_ts "$cid" "stats-agent-$t.jsonl" &
@@ -80,7 +81,7 @@ for t in baseline hematite iron; do
 done
 
 # Structural check: every produced file has both phases.
-for t in baseline hematite iron; do
+for t in baseline $PROXY_TARGETS; do
   if ! jq -e '.steady.classes.chat.count >= 1 and .burst.classes.chat.count >= 1' \
       "results/agent-$t.json" >/dev/null 2>&1; then
     echo "agent suite: results/agent-$t.json missing or incomplete" >&2

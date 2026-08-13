@@ -1,0 +1,8 @@
+# smokescreen config: unauthenticated bench clients map to the ACL's
+# default service.
+allow_missing_role: true
+acl_file: /configs/smokescreen-acl.yaml
+# The bench fixture lives in RFC1918 space, which smokescreen rightly denies
+# by default; allow only the fixture subnet. The IMDS/link-local deny stays.
+allow_ranges:
+  - 172.28.0.0/24

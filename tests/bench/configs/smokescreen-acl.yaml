@@ -1,0 +1,13 @@
+# smokescreen egress ACL — spirit-equivalent allowlist. Unauthenticated
+# clients fall through to the default service.
+---
+version: v1
+services: []
+default:
+  project: bench
+  action: enforce
+  allowed_domains:
+    - upstream.test
+    - stream.test
+    - llm.test
+    - imds-test.local

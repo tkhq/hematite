@@ -6,6 +6,7 @@
 set -uo pipefail
 cd "$(dirname "$0")"
 SUITE=${1:-all}
+. ./targets.sh
 
 ./gen-certs.sh
 mkdir -p results
@@ -42,7 +43,9 @@ wait_ready() { # wait_ready <proxy>
   echo "ERROR: $1 never became ready" >&2
   return 1
 }
-wait_ready hematite && wait_ready iron || { docker compose logs; exit 1; }
+for p in $PROXY_TARGETS; do
+  wait_ready "$p" || { docker compose logs "$p" | tail -50; exit 1; }
+done
 
 if [[ "$SUITE" == all || "$SUITE" == footprint ]]; then
   runsuite footprint ./bench-footprint.sh
@@ -58,16 +61,19 @@ if [[ "$SUITE" == all || "$SUITE" == conformance ]]; then
   HEMATITE_CONFIG=hematite-conf.yaml docker compose up -d --force-recreate hematite
   if ! wait_ready hematite; then
     echo "ERROR: hematite did not become ready after config reload; skipping conformance suites" >&2
-    echo "conformance-hematite: ERRORED" >> results/suite-status.txt
-    echo "conformance-iron: ERRORED"     >> results/suite-status.txt
+    for p in $PROXY_TARGETS; do
+      echo "conformance-$p: ERRORED" >> results/suite-status.txt
+    done
   else
-    runsuite conformance-hematite ./conformance.sh hematite
-    runsuite conformance-iron     ./conformance.sh iron
+    for p in $PROXY_TARGETS; do
+      runsuite "conformance-$p" ./conformance.sh "$p"
+    done
   fi
 fi
 
-docker compose logs hematite > results/hematite.log 2>&1
-docker compose logs iron     > results/iron.log 2>&1
+for p in $PROXY_TARGETS; do
+  docker compose logs "$p" > "results/$p.log" 2>&1
+done
 { uname -a; docker --version; echo "cpus: $(getconf _NPROCESSORS_ONLN)"; } > results/host-info.txt
 
 # Belt-and-braces containment across everything captured this run.

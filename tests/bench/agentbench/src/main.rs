@@ -545,11 +545,41 @@ async fn tool_call(target: &Target, llm_host: &str, llm_port: u16) -> Result<f64
 }
 
 /// A request the policy must reject; success = fast, definitive refusal.
+/// Two refusal shapes exist: CONNECT itself denied (hematite, iron,
+/// smokescreen), or — for bump-style proxies like squid — CONNECT answered
+/// 200 (required to peek SNI), TLS completed with a minted cert, and the
+/// inner request rejected. Both count as refusals; only an inner 2xx means
+/// the denied host was actually reachable.
 async fn denied_request(target: &Target, denied_host: &str, port: u16) -> Result<f64, String> {
     let started = Instant::now();
     match reach(target, denied_host, port).await {
         Ok(Reach::ConnectRefused) => Ok(started.elapsed().as_secs_f64() * 1000.0),
-        Ok(Reach::Tls(_)) => Err("denied host was reachable".into()),
+        Ok(Reach::Tls(mut tls)) => {
+            let req = format!("GET / HTTP/1.1\r\nHost: {denied_host}\r\n\r\n");
+            tls.write_all(req.as_bytes())
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 2048];
+            while find_headers_end(&buf).is_none() {
+                match tokio::time::timeout(Duration::from_secs(10), tls.read(&mut tmp)).await {
+                    Err(_) => return Err("denied-request timeout".into()),
+                    // Connection dropped without a response: a refusal.
+                    Ok(Ok(0)) | Ok(Err(_)) => return Ok(started.elapsed().as_secs_f64() * 1000.0),
+                    Ok(Ok(n)) => buf.extend_from_slice(&tmp[..n]),
+                }
+            }
+            let status_2xx = buf
+                .split(|&b| b == b' ')
+                .nth(1)
+                .map(|s| s.starts_with(b"2"))
+                .unwrap_or(false);
+            if status_2xx {
+                Err("denied host was reachable".into())
+            } else {
+                Ok(started.elapsed().as_secs_f64() * 1000.0)
+            }
+        }
         Err(e) => Err(e.to_string()),
     }
 }

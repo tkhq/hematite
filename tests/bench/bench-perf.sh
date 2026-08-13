@@ -61,8 +61,10 @@ measured() {
   done
 }
 
+. ./targets.sh
 measured baseline ""
-measured hematite "http://hematite:8080"
-measured iron     "http://iron:8080"
+for t in $PROXY_TARGETS; do
+  measured "$t" "http://$t:8080"
+done
 rm -f results/warmup-*.json
 echo "perf suite done"

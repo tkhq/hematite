@@ -58,6 +58,53 @@ services:
       bench:
         ipv4_address: 172.28.0.3
 
+  squid:
+    build:
+      context: .
+      dockerfile: squid.Dockerfile
+    volumes:
+      - ./configs/squid.conf:/etc/squid/squid.conf:ro
+      - ./certs:/certs:ro
+    extra_hosts:
+      - "imds-test.local:169.254.169.254"
+    networks:
+      bench:
+        ipv4_address: 172.28.0.4
+
+  mitmproxy:
+    image: mitmproxy/mitmproxy:11.1.3
+    entrypoint: ["sh", "-c"]
+    # mitmproxy wants its CA as a combined key+cert PEM inside confdir.
+    command:
+      - mkdir -p /mitm && cat /certs/ca.key /certs/ca.crt > /mitm/mitmproxy-ca.pem
+        && exec mitmdump --mode regular --listen-host 0.0.0.0 --listen-port 8080
+        -s /addons/mitm_allowlist.py --set confdir=/mitm
+        --set ssl_verify_upstream_trusted_ca=/certs/ca.crt
+    volumes:
+      - ./certs:/certs:ro
+      - ./configs/mitm_allowlist.py:/addons/mitm_allowlist.py:ro
+    extra_hosts:
+      - "imds-test.local:169.254.169.254"
+    networks:
+      bench:
+        ipv4_address: 172.28.0.5
+
+  smokescreen:
+    build:
+      context: .
+      dockerfile: smokescreen.Dockerfile
+    command:
+      ["--config-file", "/configs/smokescreen.yaml",
+       "--listen-ip", "0.0.0.0", "--listen-port", "8080"]
+    volumes:
+      - ./configs/smokescreen.yaml:/configs/smokescreen.yaml:ro
+      - ./configs/smokescreen-acl.yaml:/configs/smokescreen-acl.yaml:ro
+    extra_hosts:
+      - "imds-test.local:169.254.169.254"
+    networks:
+      bench:
+        ipv4_address: 172.28.0.6
+
   # Mock LLM upstream for the agent-traffic suite: same image as loadgen,
   # running `agentbench serve` (SSE chat streaming + tool endpoint).
   llm:
