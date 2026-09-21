@@ -3,6 +3,8 @@
 //! sniffing. The parsing/encoding here is pure and unit-tested; `listen.rs`
 //! drives the sockets.
 
+use crate::destination::{CanonicalDestination, Scheme};
+
 /// Part 05 §4 — first-byte protocol dispatch.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ClientProtocol {
@@ -29,36 +31,17 @@ pub struct ConnectTarget {
 }
 
 /// Parse a `CONNECT host:port HTTP/1.1` request line. Default port 443.
-/// `raw` is the full request head (through the blank line).
 pub fn parse_connect(raw: &str) -> Option<ConnectTarget> {
-    let line = raw.lines().next()?;
-    let mut parts = line.split_whitespace();
+    let mut parts = raw.lines().next()?.split_whitespace();
     if parts.next()? != "CONNECT" {
         return None;
     }
-    let authority = parts.next()?;
-    // The target is host:port; default 443 when the port is absent.
-    let (host, port) = split_authority(authority, 443)?;
-    Some(ConnectTarget { host, port })
+    let destination = CanonicalDestination::parse_authority(parts.next()?, Scheme::Connect).ok()?;
+    Some(ConnectTarget {
+        host: destination.host().to_string(),
+        port: destination.port(),
+    })
 }
-
-fn split_authority(authority: &str, default_port: u16) -> Option<(String, u16)> {
-    if let Some(rest) = authority.strip_prefix('[') {
-        // Bracketed IPv6 literal.
-        let end = rest.find(']')?;
-        let host = rest[..end].to_ascii_lowercase();
-        let port = match rest[end + 1..].strip_prefix(':') {
-            Some(p) => p.parse().ok()?,
-            None => default_port,
-        };
-        return Some((host, port));
-    }
-    match authority.rsplit_once(':') {
-        Some((h, p)) if !h.contains(':') => Some((h.to_ascii_lowercase(), p.parse().ok()?)),
-        _ => Some((authority.to_ascii_lowercase(), default_port)),
-    }
-}
-
 // ---- SOCKS5 (Part 05 §4.2) --------------------------------------------
 
 /// The reply for a SOCKS5 method-selection message. No-auth only.
@@ -147,7 +130,12 @@ pub fn parse_socks5_request(req: &[u8]) -> Result<ConnectTarget, Socks5Reject> {
         .get(port_offset..port_offset + 2)
         .ok_or(Socks5Reject::Malformed)?;
     let port = u16::from_be_bytes([port_bytes[0], port_bytes[1]]);
-    Ok(ConnectTarget { host, port })
+    let destination = CanonicalDestination::from_host_port(&host, port, Scheme::Connect)
+        .map_err(|_| Socks5Reject::Malformed)?;
+    Ok(ConnectTarget {
+        host: destination.host().to_string(),
+        port: destination.port(),
+    })
 }
 
 /// The SOCKS5 success reply: `05 00 00 01` + 0.0.0.0 + port 0 (Part 05 §4.2).

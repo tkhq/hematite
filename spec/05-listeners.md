@@ -143,3 +143,17 @@ tunnel listener.
   records with action `reject`, `rejected_by: "listener"`, and the observed
   status code. When the failure precedes host extraction, `host` is the
   empty string (the one case the schema permits it).
+
+## 7. Canonical destinations and tunnel authority
+
+HTTP, CONNECT, and SOCKS5 MUST use one destination parser. It rejects
+userinfo, empty hosts, controls, non-ASCII DNS input, malformed brackets,
+zone-qualified IPv6, and invalid or zero ports. DNS names are lowercased and
+one root dot is removed; IP literals use `IpAddr` canonical form. A concrete
+port, scheme (`http`, `https`, or `connect`), and `tcp` protocol are always
+materialized. Absolute URI schemes MUST agree with the listener.
+
+Every bumped-tunnel inner `Host` or `:authority`, including its effective
+port, MUST equal the CONNECT target. A different authority requires a new
+CONNECT and otherwise receives a listener denial. Every inner request that
+causes a new dial receives a new external authorization decision.

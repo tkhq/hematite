@@ -344,3 +344,34 @@ cluster is deleted on exit whether or not the suite passes.
 ```sh
 bash tests/k3s/run.sh
 ```
+
+## External authorization topology
+
+Mount the authorizer token as a read-only Secret and reference the mounted
+file from `values.config`:
+
+```yaml
+extraVolumes:
+  - name: hematite-authz
+    secret: { secretName: hematite-authz }
+extraVolumeMounts:
+  - name: hematite-authz
+    mountPath: /run/hematite-authz
+    readOnly: true
+config: |
+  external_authorization:
+    endpoint: "https://authorizer.example/v1/authorize"
+    token_file: "/run/hematite-authz/token"
+    session_id: "session-123"
+    workload_id: "worker-456"
+  # proxy and transforms omitted
+```
+
+Use one independently identified Hematite deployment per Valet session and a
+NetworkPolicy-enforcing CNI. The sandbox policy must allow only Hematite; a
+separate policy should let Hematite reach destinations and the callback.
+Never allow sandbox pods to reach the callback. A sidecar alone is not
+sufficient because a compromised workload sharing an unconstrained pod
+network can route around it. Managed mode must leave `dns.passthrough` empty
+and enforce proxy DNS/topology; arbitrary passthrough remains outside the
+callback boundary.

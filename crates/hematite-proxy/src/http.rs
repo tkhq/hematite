@@ -28,7 +28,8 @@ use hematite_kernel::verdict::Trace;
 use tracing::Instrument as _;
 
 use crate::audit::{AuditSink, PendingAudit};
-use crate::dial::{connect_upstream, DialError};
+use crate::destination::{CanonicalDestination, Scheme};
+use crate::dial::{authorize_target, connect_upstream, AuthorizationError, DialError};
 use crate::hop::strip_hop_by_hop;
 use crate::state::SharedState;
 
@@ -60,7 +61,7 @@ pub struct ConnCtx {
     pub scheme_https: bool,
     /// Tunnel listeners fix the upstream (CONNECT target) and carry the
     /// handshake traces + `tunnel.target` for audit (Part 05 §4.3).
-    pub forced_upstream: Option<(String, u16)>,
+    pub forced_upstream: Option<CanonicalDestination>,
     pub tunnel_target: Option<String>,
     pub tunnel_traces: Vec<Trace>,
 }
@@ -108,25 +109,6 @@ pub async fn serve_http(
             tunnel_traces: Vec::new(),
         });
         tokio::spawn(serve_io(stream, ctx));
-    }
-}
-
-/// `host[:port]` → (lowercase hostname, port). Handles bracketed IPv6.
-fn split_host_port(s: &str) -> (String, Option<u16>) {
-    let s = s.trim();
-    if let Some(rest) = s.strip_prefix('[') {
-        if let Some(end) = rest.find(']') {
-            let host = rest[..end].to_ascii_lowercase();
-            let port = rest[end + 1..]
-                .strip_prefix(':')
-                .and_then(|p| p.parse().ok());
-            return (host, port);
-        }
-    }
-    match s.rsplit_once(':') {
-        // A second ':' means an unbracketed IPv6 literal, not a port.
-        Some((h, p)) if !h.contains(':') => (h.to_ascii_lowercase(), p.parse().ok()),
-        _ => (s.to_ascii_lowercase(), None),
     }
 }
 
@@ -186,90 +168,89 @@ impl HyperBody for ChainBody {
 }
 
 struct Target {
-    host: String,
-    port: u16,
+    destination: CanonicalDestination,
     path: String,
     query: String,
 }
 
 enum TargetError {
-    /// 400 with the given reason; `host` may be empty (pre-extraction).
     Bad { reason: &'static str, host: String },
 }
 
-/// Resolve the upstream target for a request. A tunnel fixes host/port to
-/// the CONNECT target (path/query still from the inner request-target); a
-/// TLS leg additionally requires SNI to equal the Host hostname
-/// (Part 05 §1 step 3, threat T6).
-fn resolve_target(req: &Request<Incoming>, ctx: &ConnCtx) -> Result<Target, TargetError> {
-    if let Some((host, port)) = &ctx.forced_upstream {
-        let uri = req.uri();
-        return Ok(Target {
-            host: host.clone(),
-            port: *port,
-            path: uri.path().to_string(),
-            query: uri.query().unwrap_or("").to_string(),
-        });
-    }
-    let default_port = if ctx.scheme_https { 443 } else { 80 };
-    let target = extract_target(req, default_port)?;
-    if let Some(sni) = &ctx.sni {
-        // SNI == Host (ports ignored) for the origin-form HTTPS listener.
-        let sni_host = split_host_port(sni).0;
-        if sni_host != target.host {
-            return Err(TargetError::Bad {
-                reason: "SNI does not match Host",
-                host: target.host,
-            });
-        }
-    }
-    Ok(target)
+fn bad(reason: &'static str, host: String) -> TargetError {
+    TargetError::Bad { reason, host }
 }
 
-fn extract_target(req: &Request<Incoming>, default_port: u16) -> Result<Target, TargetError> {
-    let uri = req.uri();
-    let host_header = req
+/// Resolve every listener through the same canonical destination parser.
+/// Bumped tunnel authorities must exactly equal the CONNECT target.
+fn resolve_target(req: &Request<Incoming>, ctx: &ConnCtx) -> Result<Target, TargetError> {
+    let scheme = if ctx.scheme_https {
+        Scheme::Https
+    } else {
+        Scheme::Http
+    };
+    if let Some(uri_scheme) = req.uri().scheme_str() {
+        if uri_scheme != scheme.as_str() {
+            return Err(bad(
+                "absolute URI scheme disagrees with listener",
+                String::new(),
+            ));
+        }
+    }
+    let parse = |raw: &str| {
+        CanonicalDestination::parse_authority(raw, scheme)
+            .map_err(|_| bad("invalid authority", String::new()))
+    };
+    let uri_destination = req
+        .uri()
+        .authority()
+        .map(|a| parse(a.as_str()))
+        .transpose()?;
+    let host_destination = req
         .headers()
         .get(hyper::header::HOST)
         .and_then(|v| v.to_str().ok())
-        .map(split_host_port);
-    // HTTP/2 and absolute-form both carry the authority in the URI; the
-    // `:authority` pseudo-header is the host when no `Host` header is sent.
-    let authority = uri
-        .authority()
-        .map(|a| (a.host().to_ascii_lowercase(), a.port_u16()));
-
-    let (host, port) = match (authority, &host_header) {
-        // Both present: they must agree (hostnames compared, ports ignored).
-        (Some((ah, ap)), Some((hh, _))) => {
-            if ah != *hh {
-                return Err(TargetError::Bad {
-                    reason: "request-target authority disagrees with Host header",
-                    host: ah,
-                });
-            }
-            (ah, ap.unwrap_or(default_port))
+        .map(parse)
+        .transpose()?;
+    let observed = match (uri_destination, host_destination) {
+        (Some(a), Some(h)) if a != h => {
+            return Err(bad(
+                "request-target authority disagrees with Host header",
+                a.host().to_string(),
+            ))
         }
-        // Authority only (HTTP/2, or absolute-form without a Host header).
-        (Some((ah, ap)), None) => (ah, ap.unwrap_or(default_port)),
-        // Origin-form: host from the Host header.
-        (None, Some((hh, hp))) if !hh.is_empty() => (hh.clone(), hp.unwrap_or(default_port)),
-        _ => {
-            return Err(TargetError::Bad {
-                reason: "missing or empty Host / authority",
-                host: String::new(),
-            })
-        }
+        (Some(a), _) => a,
+        (None, Some(h)) => h,
+        (None, None) => return Err(bad("missing or empty Host / authority", String::new())),
     };
-
+    let destination = if let Some(connect) = &ctx.forced_upstream {
+        if !observed.same_authority(connect) {
+            return Err(bad(
+                "inner authority disagrees with CONNECT target",
+                observed.host().to_string(),
+            ));
+        }
+        CanonicalDestination::from_host_port(connect.host(), connect.port(), scheme)
+            .map_err(|_| bad("invalid CONNECT target", connect.host().to_string()))?
+    } else {
+        observed
+    };
+    if let Some(sni) = &ctx.sni {
+        let sni = CanonicalDestination::from_host_port(sni, destination.port(), scheme)
+            .map_err(|_| bad("invalid SNI", destination.host().to_string()))?;
+        if sni.host() != destination.host() {
+            return Err(bad(
+                "SNI does not match Host",
+                destination.host().to_string(),
+            ));
+        }
+    }
     Ok(Target {
-        host,
-        port,
-        path: uri.path().to_string(),
-        query: uri.query().unwrap_or("").to_string(),
+        destination,
+        path: req.uri().path().to_string(),
+        query: req.uri().query().unwrap_or("").to_string(),
     })
 }
-
 fn base_record(ctx: &ConnCtx, host: &str, method: &str, path: &str, action: Action) -> AuditRecord {
     AuditRecord {
         host: host.to_string(),
@@ -293,6 +274,7 @@ fn base_record(ctx: &ConnCtx, host: &str, method: &str, path: &str, action: Acti
             passthrough: false,
         }),
         guard: None,
+        authorization: None,
         body_capture: None,
     }
 }
@@ -355,7 +337,13 @@ async fn handle(
         }
     };
     if has_dot_segment(&target.path) {
-        let mut record = base_record(&ctx, &target.host, &method, &target.path, Action::Reject);
+        let mut record = base_record(
+            &ctx,
+            target.destination.host(),
+            &method,
+            &target.path,
+            Action::Reject,
+        );
         record.rejected_by = Some("listener".into());
         record.status_code = Some(400);
         record.duration_ms = ms_since(started);
@@ -375,8 +363,8 @@ async fn handle(
         "hematite.request",
         otel.name = "hematite.request",
         method = %method,
-        host = %target.host,
-        port = target.port,
+        host = %target.destination.host(),
+        port = target.destination.port(),
         path = %target.path,
         mode = ?ctx.mode,
         action = tracing::field::Empty,
@@ -421,7 +409,7 @@ async fn handle(
                 // response; audit `client_cancel`.
                 let mut record = base_record(
                     &ctx,
-                    &target.host,
+                    target.destination.host(),
                     &method,
                     &target.path,
                     Action::ClientCancel,
@@ -444,8 +432,8 @@ async fn handle(
     let mut summary = RequestSummary {
         mode: ctx.mode,
         method: method.clone(),
-        host: target.host.clone(),
-        port: target.port,
+        host: target.destination.host().to_string(),
+        port: target.destination.port(),
         path: target.path.clone(),
         query: target.query.clone(),
         headers: Headers::new(header_pairs),
@@ -503,19 +491,56 @@ async fn handle(
         Outcome::Continue(proof) => proof,
     };
 
-    // Part 07 — dial with the guard. Tunnels dial the CONNECT target, not
-    // a rewritten host; the scheme follows the client leg.
-    let (dial_host, dial_port) = match &ctx.forced_upstream {
-        Some((h, p)) => (h.clone(), *p),
-        None => (summary.host.clone(), summary.port),
+    let scheme = if ctx.scheme_https {
+        Scheme::Https
+    } else {
+        Scheme::Http
     };
-    let dial_span = tracing::info_span!(
-        parent: &span,
-        "dial",
-        host = %dial_host,
-        port = dial_port,
-    );
-    let stream = match connect_upstream(proof, &dial_host, dial_port, ctx.scheme_https, &runtime)
+    let destination =
+        match CanonicalDestination::from_host_port(&summary.host, summary.port, scheme) {
+            Ok(d)
+                if ctx
+                    .forced_upstream
+                    .as_ref()
+                    .is_none_or(|c| d.same_authority(c)) =>
+            {
+                d
+            }
+            _ => {
+                record.action = Action::Reject;
+                record.rejected_by = Some("listener".into());
+                record.status_code = Some(400);
+                record.duration_ms = ms_since(started);
+                pending.emit(&record);
+                return Ok(status_response(StatusCode::BAD_REQUEST));
+            }
+        };
+    let dial_span = tracing::info_span!(parent: &span, "dial", host = %destination.host(), port = destination.port());
+    let (proof, authorization) = match authorize_target(proof, destination, &runtime).await {
+        Ok(value) => value,
+        Err(AuthorizationError::Denied(audit)) => {
+            record.authorization = Some(*audit);
+            record.action = Action::Reject;
+            record.rejected_by = Some("external_authorization".into());
+            record.status_code = Some(403);
+            record.duration_ms = ms_since(started);
+            record_outcome(&span, &record);
+            pending.emit(&record);
+            return Ok(status_response(StatusCode::FORBIDDEN));
+        }
+        Err(AuthorizationError::Failed(audit)) => {
+            record.authorization = Some(*audit);
+            record.action = Action::Error;
+            record.status_code = Some(502);
+            record.error = Some("external authorization failed".into());
+            record.duration_ms = ms_since(started);
+            record_outcome(&span, &record);
+            pending.emit(&record);
+            return Ok(status_response(StatusCode::BAD_GATEWAY));
+        }
+    };
+    record.authorization = authorization;
+    let stream = match connect_upstream(proof, &runtime)
         .instrument(dial_span)
         .await
     {

@@ -57,6 +57,7 @@ async fn spawn_tunnel_proxy(pipeline: hematite_kernel::pipeline::Pipeline) -> (u
     let runtime = Runtime {
         pipeline,
         guard: Guard::new(&[]).unwrap(),
+        external_authorization: hematite_proxy::state::ExternalAuthorization::Disabled,
         max_request_body_bytes: 1 << 20,
         upstream_response_header_timeout: std::time::Duration::from_secs(5),
         dial_timeout: std::time::Duration::from_secs(5),
@@ -100,7 +101,10 @@ async fn connect_tunnel_plain_http_inner() {
 
     // Inner plain-HTTP request over the established tunnel.
     stream
-        .write_all(b"GET /inner HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .write_all(
+            format!("GET /inner HTTP/1.1\r\nHost: 127.0.0.1:{upstream_port}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
         .await
         .unwrap();
     stream.shutdown().await.unwrap();
@@ -172,7 +176,10 @@ async fn socks5_connect_plain_http_inner() {
 
     // Inner plain-HTTP request.
     stream
-        .write_all(b"GET /viasocks HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .write_all(
+            format!("GET /viasocks HTTP/1.1\r\nHost: 127.0.0.1:{upstream_port}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
         .await
         .unwrap();
     stream.shutdown().await.unwrap();

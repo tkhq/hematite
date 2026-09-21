@@ -29,6 +29,20 @@ pub struct GuardDenial {
     pub prefix: String,
 }
 
+/// Bounded correlation for the external authorization gate.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExternalAuthorizationAudit {
+    pub request_id: String,
+    pub decision: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+    pub duration_ms: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// Audit group for in-tunnel requests (Part 08 §2).
 #[derive(Debug, Clone, Serialize)]
 pub struct TunnelGroup {
@@ -72,6 +86,8 @@ pub struct AuditRecord {
     pub tunnel: Option<TunnelGroup>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guard: Option<GuardDenial>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authorization: Option<ExternalAuthorizationAudit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body_capture: Option<BodyCapture>,
 }
@@ -121,6 +137,7 @@ pub fn conformance_record(summary: &RequestSummary, outcome: &PipelineOutcome) -
         response_transforms: Vec::new(),
         tunnel: None,
         guard: None,
+        authorization: None,
         body_capture: outcome.body_capture.clone(),
     }
 }

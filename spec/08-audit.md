@@ -88,3 +88,15 @@ records (§3). The `Secret` type's absence of `Display`, `Serialize`, and
 `Clone`-into-`String` enforces this at compile time in the reference
 implementation (Appendix E), exactly as it does for audit records today.
 See Part 09 §5 for the operational telemetry layer that this rule governs.
+
+## 6. External authorization correlation
+
+Configured decisions add one top-level `authorization` group with bounded
+`request_id`, `decision`, optional `decision_id` and `reason_code`,
+`duration_ms`, and for failures only the safe enum `timeout`, `transport`, or
+`invalid`. Response bodies, tokens, callback URL details, workload request
+paths, queries, headers, and bodies MUST NOT enter audit, logs, spans, or
+metrics. Metrics use only `allow`, `deny`, `timeout`, `transport`, and
+`invalid` labels. Bumped inner-request decisions stay top-level while the
+CONNECT traces remain in `tunnel`; passthrough records carry the CONNECT
+callback decision.

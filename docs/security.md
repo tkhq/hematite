@@ -110,3 +110,24 @@ not the proxy's:
 This is a v0.1 reference implementation. Security-relevant findings should be
 raised as issues (or via private disclosure to the maintainers); please
 withhold public exploit details until coordinated.
+
+## Authoritative managed egress
+
+With `external_authorization` enabled, Hematite asks the configured service
+about the canonical logical destination after local policy and immediately
+before DNS. The target-bound proof prevents authorizing one destination and
+dialing another. External allow still cannot bypass the post-resolution CIDR
+guard. Tokens and callback response bodies never enter telemetry.
+
+The callback is authoritative only when deployment topology is authoritative:
+run a separate proxy boundary per session (or an equivalently isolated
+identity), and use Kubernetes NetworkPolicy, Docker network isolation, or
+host firewall rules so the workload can reach neither the internet nor the
+callback directly. A sidecar in the same unconstrained network namespace is
+not an authorization boundary. Protect the immutable session/workload
+mapping at rollout and have the service authenticate the bearer token and
+server-bind that identity rather than trusting workload headers.
+
+In Valet managed mode, disable arbitrary `dns.passthrough` entries and enforce
+proxy DNS plus network topology. DNS passthrough is a separate direct-egress
+feature and does not invoke the callback.

@@ -13,6 +13,7 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
 use crate::config::{build_runtime_with_metrics, load_str, ListenKeys};
+use crate::external_auth::ExternalAuthorizationKey;
 use crate::metrics::Metrics;
 use crate::state::SharedState;
 
@@ -46,6 +47,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 pub fn reload(
     config_path: &std::path::Path,
     current_listen: &ListenKeys,
+    current_external_authorization: Option<&ExternalAuthorizationKey>,
     state: &SharedState,
     metrics: &Arc<Metrics>,
     env: &dyn Fn(&str) -> Option<String>,
@@ -74,6 +76,13 @@ pub fn reload(
             "listener addresses are not reloadable in v1 (Part 09 §4)".into(),
         );
     }
+    if config.external_authorization.as_ref().map(|a| &a.key) != current_external_authorization {
+        metrics.inc_reload(false);
+        return (
+            422,
+            "external authorization identity, endpoint, and token source are not reloadable".into(),
+        );
+    }
     match build_runtime_with_metrics(&config, metrics.clone()) {
         Ok(runtime) => {
             state.swap(runtime);
@@ -91,23 +100,27 @@ pub fn reload(
 /// boot (Part 09 §3). `GET /metrics` is auth-exempt; all other routes
 /// require bearer auth. When `metrics_enabled` is false, `GET /metrics`
 /// returns 404 instead.
+#[allow(clippy::too_many_arguments)]
 pub async fn serve_management(
     listener: TcpListener,
     state: SharedState,
     api_key: String,
     config_path: PathBuf,
     current_listen: ListenKeys,
+    current_external_authorization: Option<ExternalAuthorizationKey>,
     metrics: Arc<Metrics>,
     metrics_enabled: bool,
 ) -> std::io::Result<()> {
     let api_key = Arc::new(api_key);
     let current_listen = Arc::new(current_listen);
+    let current_external_authorization = Arc::new(current_external_authorization);
     let config_path = Arc::new(config_path);
     loop {
         let (stream, _remote) = listener.accept().await?;
         let state = state.clone();
         let api_key = api_key.clone();
         let current_listen = current_listen.clone();
+        let current_external_authorization = current_external_authorization.clone();
         let config_path = config_path.clone();
         let metrics = metrics.clone();
         tokio::spawn(async move {
@@ -116,6 +129,7 @@ pub async fn serve_management(
                 let state = state.clone();
                 let api_key = api_key.clone();
                 let current_listen = current_listen.clone();
+                let current_external_authorization = current_external_authorization.clone();
                 let config_path = config_path.clone();
                 let metrics = metrics.clone();
                 async move {
@@ -152,6 +166,7 @@ pub async fn serve_management(
                         reload(
                             &config_path,
                             &current_listen,
+                            current_external_authorization.as_ref().as_ref(),
                             &state,
                             &metrics,
                             &crate::config::os_env,

@@ -242,6 +242,10 @@ fn main() -> ExitCode {
                 api_key.clone(),
                 config_path.clone(),
                 config.listen.clone(),
+                config
+                    .external_authorization
+                    .as_ref()
+                    .map(|a| a.key.clone()),
                 metrics.clone(),
                 config.observability.metrics.enabled,
             ));

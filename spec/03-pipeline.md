@@ -64,3 +64,11 @@ produce identical verdicts, identical traces (excluding `duration_ms`), and
 an identically rewritten request. Transforms with request-time I/O (`secrets`
 with a `file` source) are deterministic relative to the resolver's returned
 value; Appendix C vectors stub the resolver.
+
+## 7. External authorization gate
+
+External authorization is not a transform. After the local pipeline returns
+`Continue`, the proxy binds that proof to one immutable canonical destination
+and, when configured, one exact external allow. The resulting proxy-private,
+non-cloneable proof is the only input accepted by the workload dialer. No
+policy plugin, cache, retry, or asynchronous transform seam is introduced.

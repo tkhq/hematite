@@ -536,3 +536,29 @@ pipeline.
 - Invalid new config → `422` and the **old config keeps serving untouched**.
 - Bad or missing token → `401`.
 - Listener addresses are not reloadable in v1: a changed `listen` key → `422`.
+
+## `external_authorization`
+
+An optional fixed fail-closed gate after the local pipeline and before every
+workload destination lookup/dial:
+
+```yaml
+external_authorization:
+  endpoint: "https://authorizer.example/v1/authorize"
+  token_file: "/run/hematite-authz/token"
+  session_id: "session-123"
+  workload_id: "worker-456"
+  timeout: "250ms"
+```
+
+The endpoint must be HTTPS at exactly `/v1/authorize`, with no userinfo,
+query, fragment, or redirect. `timeout` defaults to 250 ms and cannot exceed
+1 s. Mount `token_file` read-only. The direct control-plane client trusts the
+system CA store, ignores `HTTP_PROXY`/`HTTPS_PROXY`, and never enters the
+workload dial path. Deny returns a policy refusal; callback or response
+failure returns a gateway/general failure. There are no retries or cached
+allows. Endpoint, token path, and both identity fields require a rollout to
+change; reload returns 422.
+
+Metrics expose `hematite_external_authorization_total{result}` with only
+`allow`, `deny`, `timeout`, `transport`, and `invalid` values.

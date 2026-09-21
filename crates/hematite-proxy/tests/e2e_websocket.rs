@@ -76,6 +76,7 @@ async fn websocket_upgrade_and_byte_copy() {
     let runtime = Runtime {
         pipeline: build_pipeline(&specs).unwrap().pipeline,
         guard: Guard::new(&[]).unwrap(),
+        external_authorization: hematite_proxy::state::ExternalAuthorization::Disabled,
         max_request_body_bytes: 1 << 20,
         upstream_response_header_timeout: std::time::Duration::from_secs(5),
         dial_timeout: std::time::Duration::from_secs(5),

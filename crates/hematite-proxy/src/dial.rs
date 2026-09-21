@@ -1,47 +1,109 @@
-//! Part 07 §1–§2, §4 — upstream dialing, the guard, and upstream TLS.
-//!
-//! INV-2: `connect_upstream` is the only path to an upstream socket, and it
-//! consumes the pipeline's `AllowProof`.
+//! Target-bound authorization, workload DNS, resolved-IP guard, and dial.
 
 use std::net::IpAddr;
 
-use hematite_kernel::audit::GuardDenial;
+use hematite_kernel::audit::{ExternalAuthorizationAudit, GuardDenial};
 use hematite_kernel::pipeline::AllowProof;
 use rustls::pki_types::ServerName;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
+use crate::destination::{CanonicalDestination, Scheme};
+use crate::external_auth::{AuthorizationOutcome, ExternalProof};
 use crate::metrics::DialResult;
-use crate::state::Runtime;
+use crate::state::{ExternalAuthorization, Runtime};
 
-/// Any bidirectional upstream stream (plaintext TCP or TLS).
 pub trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
 
+pub enum AuthorizationError {
+    Denied(Box<ExternalAuthorizationAudit>),
+    Failed(Box<ExternalAuthorizationAudit>),
+}
+
 pub enum DialError {
-    /// Guard denial: audits as a policy denial (`rejected_by: "guard"`,
-    /// status 502), not an error (Part 07 §2).
     Denied(GuardDenial),
-    /// Resolution or connection failure → 502, action `error`.
     Failed(String),
 }
 
-/// Resolve, apply the guard, connect, and — when `scheme_https` — complete
-/// an upstream TLS handshake verified against the configured roots
-/// (Part 07 §4). Returns a unified stream.
-pub async fn connect_upstream(
-    proof: AllowProof,
-    host: &str,
-    port: u16,
-    scheme_https: bool,
+enum ExternalAuthorizationProof {
+    Disabled,
+    Allowed(ExternalProof),
+}
+
+/// Proxy-private and non-cloneable. The only dial entry point consumes it and
+/// derives every network parameter from its immutable destination.
+pub(crate) struct TargetProof {
+    _pipeline: AllowProof,
+    destination: CanonicalDestination,
+    _external: ExternalAuthorizationProof,
+}
+
+/// Bind the pipeline verdict to one canonical target. Configured mode can
+/// return a proof only after the exact callback response strictly allows it.
+pub(crate) async fn authorize_target(
+    pipeline: AllowProof,
+    destination: CanonicalDestination,
+    runtime: &Runtime,
+) -> Result<(TargetProof, Option<ExternalAuthorizationAudit>), AuthorizationError> {
+    match &runtime.external_authorization {
+        ExternalAuthorization::Disabled => Ok((
+            TargetProof {
+                _pipeline: pipeline,
+                destination,
+                _external: ExternalAuthorizationProof::Disabled,
+            },
+            None,
+        )),
+        ExternalAuthorization::Configured(authorizer) => {
+            match authorizer.authorize(&destination).await {
+                AuthorizationOutcome::Allowed(external, audit) => {
+                    assert!(
+                        external.exact_for(&destination),
+                        "external proof target mismatch"
+                    );
+                    Ok((
+                        TargetProof {
+                            _pipeline: pipeline,
+                            destination,
+                            _external: ExternalAuthorizationProof::Allowed(external),
+                        },
+                        Some(audit),
+                    ))
+                }
+                AuthorizationOutcome::Denied(audit) => {
+                    Err(AuthorizationError::Denied(Box::new(audit)))
+                }
+                AuthorizationOutcome::Failed(audit) => {
+                    Err(AuthorizationError::Failed(Box::new(audit)))
+                }
+            }
+        }
+    }
+}
+
+/// Consume one target-bound permit. It covers this one dial operation and all
+/// of its address candidates; it cannot be cloned or reused.
+pub(crate) async fn connect_upstream(
+    proof: TargetProof,
     runtime: &Runtime,
 ) -> Result<Box<dyn Io>, DialError> {
-    // The proof is consumed by value: no proof, no socket (INV-2).
-    let _ = proof;
+    let TargetProof {
+        destination,
+        _external: external,
+        ..
+    } = proof;
+    if let ExternalAuthorizationProof::Allowed(external) = external {
+        assert!(
+            external.exact_for(&destination),
+            "target-bound proof mismatch"
+        );
+    }
+    let host = destination.host();
+    let port = destination.port();
+    let scheme_https = destination.scheme() == Scheme::Https;
 
-    // Resolution uses a real resolver (the OS's) — never hematite's own
-    // intercepting DNS server, which would loop (Part 07 §1).
     let addrs: Vec<std::net::SocketAddr> = if let Ok(ip) = host.parse::<IpAddr>() {
         vec![(ip, port).into()]
     } else {
@@ -62,8 +124,6 @@ pub async fn connect_upstream(
 
     let mut last_err = None;
     for addr in addrs {
-        // Guard is enforced against the exact IP being dialed; a denial
-        // fails the request (no fall-through past a denied address).
         if let Err(denial) = runtime.guard.check(addr.ip()) {
             runtime.metrics.inc_dial(DialResult::GuardDenied);
             return Err(DialError::Denied(denial));

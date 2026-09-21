@@ -159,3 +159,22 @@ no-op subscriber, so no spans are recorded or exported.
 `[0.0, 1.0]`. A ratio of `1.0` (the default) samples every request. A ratio
 of `0.0` samples nothing. Sampled-out spans are not exported; the sampling
 and export decision is made downstream by the SDK after span creation.
+
+## 6. External authorization configuration
+
+```yaml
+external_authorization:
+  endpoint: "https://host/v1/authorize"
+  token_file: "/run/hematite-authz/token"
+  session_id: "session"
+  workload_id: "workload"
+  timeout: "250ms"
+```
+
+The section is optional. Unknown fields fail validation. The endpoint is
+HTTPS with exactly `/v1/authorize` and no userinfo, query, or fragment.
+Timeout defaults to 250 ms and MUST be at most 1 s. The token is loaded from
+a read-only file into an opaque zeroizing value and is never formatted or
+serialized. Endpoint, token source, session ID, and workload ID are immutable
+across reload; changing any returns 422 and requires rollout. Timeout may
+reload atomically. Absence preserves standalone behavior.

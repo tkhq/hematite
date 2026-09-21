@@ -8,7 +8,9 @@
 
 pub mod audit;
 pub mod config;
+pub mod destination;
 pub mod dial;
+pub mod external_auth;
 pub mod hop;
 pub mod http;
 pub mod listen;

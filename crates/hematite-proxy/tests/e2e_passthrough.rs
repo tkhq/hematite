@@ -116,6 +116,7 @@ async fn spawn_passthrough_proxy(
     let runtime = Runtime {
         pipeline,
         guard,
+        external_authorization: hematite_proxy::state::ExternalAuthorization::Disabled,
         max_request_body_bytes: 1 << 20,
         upstream_response_header_timeout: std::time::Duration::from_secs(5),
         dial_timeout: std::time::Duration::from_secs(5),

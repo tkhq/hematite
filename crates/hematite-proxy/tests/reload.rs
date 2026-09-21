@@ -78,14 +78,14 @@ fn reload_swaps_rejects_and_survives() {
 
     // Valid new config → 200, swapped.
     write_config(&path, V2);
-    let (status, _) = reload(&path, &config.listen, &state, &metrics, &no_env);
+    let (status, _) = reload(&path, &config.listen, None, &state, &metrics, &no_env);
     assert_eq!(status, 200);
     assert!(allows(&state, "two.example"));
     assert!(!allows(&state, "one.example"));
 
     // Invalid new config → 422; the old (v2) config keeps serving.
     write_config(&path, BROKEN);
-    let (status, message) = reload(&path, &config.listen, &state, &metrics, &no_env);
+    let (status, message) = reload(&path, &config.listen, None, &state, &metrics, &no_env);
     assert_eq!(status, 422, "{message}");
     assert!(
         allows(&state, "two.example"),
@@ -94,7 +94,7 @@ fn reload_swaps_rejects_and_survives() {
 
     // Changed listener address → 422.
     write_config(&path, &format!("{V2}\nproxy:\n  http_listen: \":8081\"\n"));
-    let (status, message) = reload(&path, &config.listen, &state, &metrics, &no_env);
+    let (status, message) = reload(&path, &config.listen, None, &state, &metrics, &no_env);
     assert_eq!(status, 422, "{message}");
     assert!(message.contains("not reloadable"));
 
@@ -102,6 +102,7 @@ fn reload_swaps_rejects_and_survives() {
     let (status, _) = reload(
         &dir.join("missing.yaml"),
         &config.listen,
+        None,
         &state,
         &metrics,
         &no_env,
@@ -109,4 +110,22 @@ fn reload_swaps_rejects_and_survives() {
     assert_eq!(status, 500);
 
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn external_authorization_identity_is_not_reloadable() {
+    let dir = std::env::temp_dir().join(format!("hematite-reload-authz-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    write_config(&path, V1);
+    let config = load_str(V1, &no_env).unwrap();
+    let state = SharedState::new(build_runtime(&config).unwrap());
+    let metrics = Metrics::new("test");
+    let changed = format!("{V1}\nexternal_authorization:\n  endpoint: \"https://auth.example/v1/authorize\"\n  token_file: \"/run/auth/token\"\n  session_id: \"s1\"\n  workload_id: \"w1\"\n");
+    write_config(&path, &changed);
+    let (status, message) = reload(&path, &config.listen, None, &state, &metrics, &no_env);
+    assert_eq!(status, 422);
+    assert!(message.contains("not reloadable"));
+    assert!(allows(&state, "one.example"));
+    std::fs::remove_dir_all(dir).ok();
 }
