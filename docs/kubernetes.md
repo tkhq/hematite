@@ -353,7 +353,9 @@ file from `values.config`:
 ```yaml
 extraVolumes:
   - name: hematite-authz
-    secret: { secretName: hematite-authz }
+    secret:
+      secretName: hematite-authz
+      defaultMode: 0400
 extraVolumeMounts:
   - name: hematite-authz
     mountPath: /run/hematite-authz
@@ -366,6 +368,11 @@ config: |
     workload_id: "worker-456"
   # proxy and transforms omitted
 ```
+
+`readOnly: true` prevents writes through the volume mount. It does not change
+the mode of projected Secret files, which defaults to `0644`. Hematite rejects
+an external authorization token file with any write bit, so keep
+`defaultMode: 0400` on this Secret volume.
 
 Use one independently identified Hematite deployment per Valet session and a
 NetworkPolicy-enforcing CNI. The sandbox policy must allow only Hematite; a
