@@ -121,6 +121,13 @@ fn external_authorization_identity_is_not_reloadable() {
     let config = load_str(V1, &no_env).unwrap();
     let state = SharedState::new(build_runtime(&config).unwrap());
     let metrics = Metrics::new("test");
+    let passthrough = format!("{V1}\ndns:\n  passthrough: [\"*.internal\"]\nexternal_authorization:\n  endpoint: \"https://auth.example/v1/authorize\"\n  token_file: \"/run/auth/token\"\n  session_id: \"s1\"\n  workload_id: \"w1\"\n");
+    write_config(&path, &passthrough);
+    let (status, message) = reload(&path, &config.listen, None, &state, &metrics, &no_env);
+    assert_eq!(status, 422);
+    assert!(message.contains("dns.passthrough must be empty"));
+    assert!(allows(&state, "one.example"));
+
     let changed = format!("{V1}\nexternal_authorization:\n  endpoint: \"https://auth.example/v1/authorize\"\n  token_file: \"/run/auth/token\"\n  session_id: \"s1\"\n  workload_id: \"w1\"\n");
     write_config(&path, &changed);
     let (status, message) = reload(&path, &config.listen, None, &state, &metrics, &no_env);

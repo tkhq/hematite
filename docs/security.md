@@ -101,9 +101,10 @@ not the proxy's:
 5. **Bind management to loopback.** The reload endpoint should listen on
    loopback (or an otherwise-restricted interface); its token is compared in
    constant time, but it is still a control-plane surface.
-6. **Review `upstream_deny_cidrs`.** The defaults cover cloud metadata and
-   loopback. Add your own internal ranges (RFC 1918, service meshes) if the
-   workloads should not reach them. Those ranges are outside the default deny list.
+6. **Review `upstream_deny_cidrs`.** The default guard intentionally covers
+   only cloud metadata and loopback. Operators and authorizers must add any
+   private, link-local, service-mesh, or internal ranges that workloads must
+   not reach.
 
 ## Reporting
 
@@ -128,6 +129,7 @@ not an authorization boundary. Protect the immutable session/workload
 mapping at rollout and have the service authenticate the bearer token and
 server-bind that identity rather than trusting workload headers.
 
-In Valet managed mode, disable arbitrary `dns.passthrough` entries and enforce
-proxy DNS plus network topology. DNS passthrough is a separate direct-egress
-feature and does not invoke the callback.
+When `external_authorization` is enabled, `dns.passthrough` must be empty or
+startup and reload fail. Enforce proxy DNS and network topology as separate
+controls. DNS passthrough remains available when external authorization is
+disabled.

@@ -40,6 +40,11 @@ fails at the socket.
 
 ## 3. Header hygiene
 
+Before policy and authorization, the proxy MUST reject multiple `Host`
+headers and any `Host` value outside visible ASCII or the canonical authority
+grammar. This check also applies when an absolute-form URI supplies the
+destination. The proxy MUST NOT forward duplicate or opaque `Host` bytes.
+
 Before forwarding, the proxy MUST strip the hop-by-hop headers (RFC 7230
 §6.1): `Connection`, `Proxy-Connection`, `Keep-Alive`, `Proxy-Authenticate`,
 `Proxy-Authorization`, `TE`, `Trailer`, `Transfer-Encoding`, and `Upgrade`,

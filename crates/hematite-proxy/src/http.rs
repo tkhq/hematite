@@ -206,11 +206,20 @@ fn resolve_target(req: &Request<Incoming>, ctx: &ConnCtx) -> Result<Target, Targ
         .authority()
         .map(|a| parse(a.as_str()))
         .transpose()?;
-    let host_destination = req
-        .headers()
-        .get(hyper::header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .map(parse)
+    let mut host_values = req.headers().get_all(hyper::header::HOST).iter();
+    let host_value = host_values.next();
+    if host_values.next().is_some() {
+        return Err(bad("multiple Host headers", String::new()));
+    }
+    let host_destination = host_value
+        .map(|value| {
+            let raw = std::str::from_utf8(value.as_bytes())
+                .map_err(|_| bad("invalid Host header", String::new()))?;
+            raw.bytes()
+                .all(|byte| (b'!'..=b'~').contains(&byte))
+                .then(|| parse(raw))
+                .ok_or_else(|| bad("invalid Host header", String::new()))?
+        })
         .transpose()?;
     let observed = match (uri_destination, host_destination) {
         (Some(a), Some(h)) if a != h => {

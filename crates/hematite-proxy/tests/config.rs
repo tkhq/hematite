@@ -314,4 +314,15 @@ fn external_authorization_is_strict_and_bounded() {
         "http://auth.example/v1/authorize",
     );
     assert!(load_str(&bad_endpoint, &no_env).is_err());
+
+    let passthrough = format!("{valid}\ndns:\n  passthrough: [\"*.internal\"]\n");
+    let error = load_str(&passthrough, &no_env)
+        .err()
+        .expect("managed DNS passthrough must fail");
+    assert!(error.to_string().contains("dns.passthrough must be empty"));
+    assert!(load_str(
+        &format!("{MINIMAL}\ndns:\n  enabled: false\n  passthrough: [\"*.internal\"]\n"),
+        &no_env
+    )
+    .is_ok());
 }

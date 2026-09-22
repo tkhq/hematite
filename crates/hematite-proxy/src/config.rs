@@ -471,6 +471,16 @@ pub fn load_str(yaml: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Conf
         .transpose()?;
 
     // 4. Validate.
+    if external_authorization.is_some()
+        && raw
+            .dns
+            .as_ref()
+            .is_some_and(|dns| !dns.passthrough.is_empty())
+    {
+        return Err(LoadError(
+            "dns.passthrough must be empty when external_authorization is enabled".into(),
+        ));
+    }
     if let Some(dns) = &raw.dns {
         if dns.enabled {
             if dns.proxy_ip.is_none() {

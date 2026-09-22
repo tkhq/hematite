@@ -560,5 +560,10 @@ failure returns a gateway/general failure. There are no retries or cached
 allows. Endpoint, token path, and both identity fields require a rollout to
 change; reload returns 422.
 
+`dns.passthrough` must be empty when external authorization is configured.
+Startup and reload reject the combination because passthrough DNS bypasses
+the callback boundary. Standalone mode without external authorization keeps
+existing passthrough behavior.
+
 Metrics expose `hematite_external_authorization_total{result}` with only
 `allow`, `deny`, `timeout`, `transport`, and `invalid` values.

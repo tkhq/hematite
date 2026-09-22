@@ -379,6 +379,6 @@ NetworkPolicy-enforcing CNI. The sandbox policy must allow only Hematite; a
 separate policy should let Hematite reach destinations and the callback.
 Never allow sandbox pods to reach the callback. A sidecar alone is not
 sufficient because a compromised workload sharing an unconstrained pod
-network can route around it. Managed mode must leave `dns.passthrough` empty
-and enforce proxy DNS/topology; arbitrary passthrough remains outside the
-callback boundary.
+network can route around it. External authorization requires an empty
+`dns.passthrough`; startup and reload reject any non-empty value. Enforce
+proxy DNS and network topology independently.

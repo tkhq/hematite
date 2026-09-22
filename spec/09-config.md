@@ -6,7 +6,7 @@
 
 One YAML file, one flag: `hematite -config path.yaml`. Full worked example:
 Appendix B. Top-level keys: `dns`, `proxy`, `tls`, `transforms`,
-`management`, `log`, `observability`. Unknown top-level keys or transform names MUST fail
+`management`, `log`, `observability`, `external_authorization`. Unknown top-level keys or transform names MUST fail
 validation (typos must not silently no-op — threat T9).
 
 ```yaml
@@ -24,6 +24,7 @@ observability:
   metrics:  { enabled }
   log:      { format }
   otlp:     { enabled, endpoint, sample_ratio, service_name }
+external_authorization: { endpoint, token_file, session_id, workload_id, timeout }
 ```
 
 ## 2. Load order and defaults
@@ -87,6 +88,9 @@ enforced only when that feature is actually enabled.
   `observability.otlp.sample_ratio must be within 0.0..=1.0`.
 - `observability.log.format` not `"json"` or `"text"` MUST fail with:
   `observability.log.format must be "json" or "text"`.
+- When `external_authorization` is present, a non-empty `dns.passthrough`
+  MUST fail startup and reload. Without external authorization, existing
+  DNS passthrough behavior is unchanged.
 
 ## 4. Management API and reload
 
@@ -177,4 +181,5 @@ Timeout defaults to 250 ms and MUST be at most 1 s. The token is loaded from
 a read-only file into an opaque zeroizing value and is never formatted or
 serialized. Endpoint, token source, session ID, and workload ID are immutable
 across reload; changing any returns 422 and requires rollout. Timeout may
-reload atomically. Absence preserves standalone behavior.
+reload atomically. `dns.passthrough` MUST be empty while this section is
+present. Absence preserves standalone behavior.
