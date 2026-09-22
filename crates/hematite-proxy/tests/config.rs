@@ -297,3 +297,32 @@ transforms:
     let config = load_str(yaml, &no_env).expect("schema-valid config loads");
     assert!(hematite_proxy::config::build_runtime(&config).is_err());
 }
+
+#[test]
+fn external_authorization_is_strict_and_bounded() {
+    let valid = format!("{MINIMAL}\nexternal_authorization:\n  endpoint: \"https://auth.example/v1/authorize\"\n  token_file: \"/run/auth/token\"\n  session_id: \"s1\"\n  workload_id: \"w1\"\n");
+    let config = load_str(&valid, &no_env).unwrap();
+    assert_eq!(
+        config.external_authorization.unwrap().timeout,
+        Duration::from_millis(250)
+    );
+    for extra in ["  surprise: true\n", "  timeout: \"1001ms\"\n"] {
+        assert!(load_str(&format!("{valid}{extra}"), &no_env).is_err());
+    }
+    let bad_endpoint = valid.replace(
+        "https://auth.example/v1/authorize",
+        "http://auth.example/v1/authorize",
+    );
+    assert!(load_str(&bad_endpoint, &no_env).is_err());
+
+    let passthrough = format!("{valid}\ndns:\n  passthrough: [\"*.internal\"]\n");
+    let error = load_str(&passthrough, &no_env)
+        .err()
+        .expect("managed DNS passthrough must fail");
+    assert!(error.to_string().contains("dns.passthrough must be empty"));
+    assert!(load_str(
+        &format!("{MINIMAL}\ndns:\n  enabled: false\n  passthrough: [\"*.internal\"]\n"),
+        &no_env
+    )
+    .is_ok());
+}

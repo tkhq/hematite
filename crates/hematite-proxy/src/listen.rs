@@ -13,7 +13,8 @@ use tokio_rustls::LazyConfigAcceptor;
 use tracing::Instrument as _;
 
 use crate::audit::{AuditSink, PendingAudit};
-use crate::dial::{connect_upstream, DialError};
+use crate::destination::{CanonicalDestination, Scheme};
+use crate::dial::{authorize_target, connect_upstream, AuthorizationError, DialError};
 use crate::http::{serve_io, ConnCtx};
 use crate::state::{Runtime, SharedState};
 use crate::tunnel::{
@@ -51,6 +52,7 @@ fn emit_listener_reject(
         response_transforms: Vec::new(),
         tunnel: None,
         guard: None,
+        authorization: None,
         body_capture: None,
     };
     pending.emit(&record);
@@ -137,7 +139,10 @@ async fn terminate_and_serve(
     let (mode, forced_upstream, tunnel_target, tunnel_traces) = match forced {
         Some((target, traces)) => (
             Mode::Tunnel,
-            Some((target.host.clone(), target.port)),
+            Some(
+                CanonicalDestination::from_host_port(&target.host, target.port, Scheme::Connect)
+                    .expect("parsed CONNECT target"),
+            ),
             Some(format!("{}:{}", target.host, target.port)),
             traces,
         ),
@@ -268,7 +273,14 @@ async fn handle_tunnel(
                 mode: Mode::Tunnel,
                 sni: None,
                 scheme_https: false,
-                forced_upstream: Some((target.host.clone(), target.port)),
+                forced_upstream: Some(
+                    CanonicalDestination::from_host_port(
+                        &target.host,
+                        target.port,
+                        Scheme::Connect,
+                    )
+                    .expect("parsed CONNECT target"),
+                ),
                 tunnel_target: Some(format!("{}:{}", target.host, target.port)),
                 tunnel_traces: traces,
             });
@@ -406,37 +418,71 @@ async fn passthrough_tunnel(
         passthrough: true,
     };
 
-    // Dial before replying: a guard denial or connect failure must fail the
-    // CONNECT itself, not surface after a success reply.
-    let mut upstream =
-        match connect_upstream(proof, &target.host, target.port, false, runtime).await {
-            Ok(io) => io,
-            Err(e) => {
-                let mut pending = PendingAudit::new(sink.clone(), Some(remote.clone()));
-                let mut record = base_tunnel_record(&remote, &target, &traces);
-                match e {
-                    DialError::Denied(denial) => {
-                        record.action = Action::Reject;
-                        record.rejected_by = Some("guard".into());
-                        record.guard = Some(denial);
-                    }
-                    DialError::Failed(message) => {
-                        record.action = Action::Error;
-                        record.error = Some(message);
-                    }
-                }
-                record.status_code = Some(502);
-                record.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
-                record.tunnel = Some(tunnel_group());
-                pending.emit(&record);
-                if is_socks {
-                    let _ = stream.write_all(&socks5_failure(0x02)).await;
-                } else {
-                    let _ = stream.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
-                }
-                return Ok(());
+    let destination =
+        CanonicalDestination::from_host_port(&target.host, target.port, Scheme::Connect)
+            .expect("parsed CONNECT target");
+    let (proof, authorization) = match authorize_target(proof, destination, runtime).await {
+        Ok(value) => value,
+        Err(error) => {
+            let mut pending = PendingAudit::new(sink.clone(), Some(remote.clone()));
+            let mut record = base_tunnel_record(&remote, &target, &traces);
+            let denied = matches!(error, AuthorizationError::Denied(_));
+            let audit = match error {
+                AuthorizationError::Denied(a) | AuthorizationError::Failed(a) => *a,
+            };
+            record.authorization = Some(audit);
+            record.status_code = Some(if denied { 403 } else { 502 });
+            if denied {
+                record.action = Action::Reject;
+                record.rejected_by = Some("external_authorization".into());
+            } else {
+                record.action = Action::Error;
+                record.error = Some("external authorization failed".into());
             }
-        };
+            record.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+            record.tunnel = Some(tunnel_group());
+            pending.emit(&record);
+            if is_socks {
+                let _ = stream
+                    .write_all(&socks5_failure(if denied { 0x02 } else { 0x01 }))
+                    .await;
+            } else if denied {
+                let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n").await;
+            } else {
+                let _ = stream.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
+            }
+            return Ok(());
+        }
+    };
+    let mut upstream = match connect_upstream(proof, runtime).await {
+        Ok(io) => io,
+        Err(e) => {
+            let mut pending = PendingAudit::new(sink.clone(), Some(remote.clone()));
+            let mut record = base_tunnel_record(&remote, &target, &traces);
+            record.authorization = authorization;
+            match e {
+                DialError::Denied(denial) => {
+                    record.action = Action::Reject;
+                    record.rejected_by = Some("guard".into());
+                    record.guard = Some(denial);
+                }
+                DialError::Failed(message) => {
+                    record.action = Action::Error;
+                    record.error = Some(message);
+                }
+            }
+            record.status_code = Some(502);
+            record.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+            record.tunnel = Some(tunnel_group());
+            pending.emit(&record);
+            if is_socks {
+                let _ = stream.write_all(&socks5_failure(0x01)).await;
+            } else {
+                let _ = stream.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
+            }
+            return Ok(());
+        }
+    };
 
     if is_socks {
         stream.write_all(&SOCKS5_SUCCESS).await?;
@@ -478,6 +524,7 @@ async fn passthrough_tunnel(
         if *name != target.host.to_ascii_lowercase() {
             let mut pending = PendingAudit::new(sink.clone(), Some(remote.clone()));
             let mut record = base_tunnel_record(&remote, &target, &traces);
+            record.authorization = authorization.clone();
             record.action = Action::Reject;
             record.rejected_by = Some("listener".into());
             record.sni = Some(name.clone());
@@ -496,6 +543,7 @@ async fn passthrough_tunnel(
 
     let mut pending = PendingAudit::new(sink.clone(), Some(remote.clone()));
     let mut record = base_tunnel_record(&remote, &target, &traces);
+    record.authorization = authorization;
     record.action = Action::Allow;
     record.status_code = Some(200);
     record.sni = observed_sni;
@@ -557,6 +605,7 @@ fn base_tunnel_record(remote: &str, target: &ConnectTarget, traces: &[Trace]) ->
         response_transforms: Vec::new(),
         tunnel: None,
         guard: None,
+        authorization: None,
         body_capture: None,
     }
 }

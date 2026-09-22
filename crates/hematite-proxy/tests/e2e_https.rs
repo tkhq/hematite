@@ -150,6 +150,7 @@ async fn https_mitm_terminates_and_forwards() {
     let runtime = Runtime {
         pipeline,
         guard: Guard::new(&[]).unwrap(),
+        external_authorization: hematite_proxy::state::ExternalAuthorization::Disabled,
         max_request_body_bytes: 1 << 20,
         upstream_response_header_timeout: std::time::Duration::from_secs(5),
         dial_timeout: std::time::Duration::from_secs(5),
@@ -212,6 +213,7 @@ async fn https_no_sni_is_rejected() {
     let runtime = Runtime {
         pipeline: build_pipeline(&specs).unwrap().pipeline,
         guard: Guard::new(&[]).unwrap(),
+        external_authorization: hematite_proxy::state::ExternalAuthorization::Disabled,
         max_request_body_bytes: 1 << 20,
         upstream_response_header_timeout: std::time::Duration::from_secs(5),
         dial_timeout: std::time::Duration::from_secs(5),

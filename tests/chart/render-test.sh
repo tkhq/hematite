@@ -30,6 +30,15 @@ assert 'HEMATITE_MANAGEMENT_API_KEY'    "management API key env present"
 assert 'name: hematite-mgmt'            "management key sourced from management.existingSecret"
 assert 'name: OPENAI_API_KEY'           "values.env passthrough renders"
 
+# YAML renders 0400 as decimal 256. Keep the assertion scoped to the
+# external-authorization Secret instead of accepting the TLS volume's mode.
+authz_out=$(helm template hematite "$CHART" -f "$VALUES" \
+  -f tests/chart/external-authorization-values.yaml)
+if ! grep -B1 'secretName: hematite-authz' <<<"$authz_out" | grep -q 'defaultMode: 256'; then
+  echo "FAIL: external authorization token Secret must render mode 0400"; exit 1
+fi
+echo "ok: external authorization token Secret uses restrictive file mode"
+
 assert 'kind: NetworkPolicy'  "egress lockdown renders when enabled"
 assert 'app: accept-client'   "lockdown selects the configured client pods"
 assert 'k8s-app: kube-dns'    "lockdown allows cluster DNS (bootstrap resolution)"

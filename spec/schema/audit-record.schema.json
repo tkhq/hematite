@@ -30,6 +30,19 @@
         "passthrough": { "const": true }
       }
     },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request_id", "decision", "duration_ms"],
+      "properties": {
+        "request_id": { "type": "string", "maxLength": 128 },
+        "decision": { "enum": ["allow", "deny", "timeout", "transport", "invalid"] },
+        "decision_id": { "type": "string", "maxLength": 128 },
+        "reason_code": { "type": "string", "maxLength": 128 },
+        "duration_ms": { "type": "number", "minimum": 0 },
+        "error": { "enum": ["timeout", "transport", "invalid"] }
+      }
+    },
     "guard": {
       "type": "object",
       "additionalProperties": false,

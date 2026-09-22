@@ -1,0 +1,9 @@
+extraVolumes:
+  - name: hematite-authz
+    secret:
+      secretName: hematite-authz
+      defaultMode: 0400
+extraVolumeMounts:
+  - name: hematite-authz
+    mountPath: /run/hematite-authz
+    readOnly: true

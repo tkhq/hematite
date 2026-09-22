@@ -37,6 +37,7 @@ fn base(action: Action) -> AuditRecord {
         response_transforms: vec![],
         tunnel: None,
         guard: None,
+        authorization: None,
         body_capture: None,
     }
 }

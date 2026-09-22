@@ -10,6 +10,7 @@ use hematite_kernel::matcher::Cidr;
 use hematite_kernel::pipeline::Pipeline;
 use rustls::ClientConfig;
 
+use crate::external_auth::ExternalAuthorizer;
 use crate::metrics::Metrics;
 use crate::tls::CertCache;
 
@@ -70,9 +71,15 @@ impl Guard {
 /// Everything a request handler needs, built once per config load. Reload
 /// builds a complete new `Runtime` and swaps it; in-flight requests keep
 /// their `Arc` to the old one (Part 03 §1, threat T9).
+pub enum ExternalAuthorization {
+    Disabled,
+    Configured(Arc<ExternalAuthorizer>),
+}
+
 pub struct Runtime {
     pub pipeline: Pipeline,
     pub guard: Guard,
+    pub external_authorization: ExternalAuthorization,
     pub max_request_body_bytes: usize,
     pub upstream_response_header_timeout: Duration,
     pub dial_timeout: Duration,

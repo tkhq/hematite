@@ -42,6 +42,26 @@ impl DialResult {
 
 /// Outcome of a DNS query.
 #[derive(Debug, Clone, Copy)]
+pub enum AuthorizationResult {
+    Allow,
+    Deny,
+    Timeout,
+    Transport,
+    Invalid,
+}
+impl AuthorizationResult {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Deny => "deny",
+            Self::Timeout => "timeout",
+            Self::Transport => "transport",
+            Self::Invalid => "invalid",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum DnsOutcome {
     Intercept,
     Static,
@@ -120,6 +140,9 @@ pub struct Metrics {
     // hematite_upstream_dials_total{result}
     dials: Mutex<BTreeMap<String, u64>>,
 
+    // hematite_external_authorization_total{result}
+    authorization: Mutex<BTreeMap<String, u64>>,
+
     // hematite_dns_queries_total{outcome}
     dns: Mutex<BTreeMap<String, u64>>,
 
@@ -138,6 +161,7 @@ impl Metrics {
             duration: Mutex::new(BTreeMap::new()),
             secrets: Mutex::new(BTreeMap::new()),
             dials: Mutex::new(BTreeMap::new()),
+            authorization: Mutex::new(BTreeMap::new()),
             dns: Mutex::new(BTreeMap::new()),
             tls_cache: Mutex::new(BTreeMap::new()),
             reloads: Mutex::new(BTreeMap::new()),
@@ -239,6 +263,16 @@ impl Metrics {
             .or_insert(0) += 1;
     }
 
+    pub fn inc_authorization(&self, result: AuthorizationResult) {
+        let key = format!(r#"result="{}""#, result.as_str());
+        *self
+            .authorization
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(key)
+            .or_insert(0) += 1;
+    }
+
     /// Increment the DNS query counter.
     pub fn inc_dns(&self, outcome: DnsOutcome) {
         let key = format!(r#"outcome="{}""#, escape_label(outcome.as_str()));
@@ -325,6 +359,19 @@ impl Metrics {
         for (labels, count) in self.dials.lock().unwrap_or_else(|e| e.into_inner()).iter() {
             out.push_str(&format!(
                 "hematite_upstream_dials_total{{{labels}}} {count}\n"
+            ));
+        }
+
+        // hematite_external_authorization_total
+        out.push_str("# TYPE hematite_external_authorization_total counter\n");
+        for (labels, count) in self
+            .authorization
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+        {
+            out.push_str(&format!(
+                "hematite_external_authorization_total{{{labels}}} {count}\n"
             ));
         }
 
@@ -472,6 +519,7 @@ mod tests {
             response_transforms: vec![],
             tunnel: None,
             guard: None,
+            authorization: None,
             body_capture: None,
         }
     }

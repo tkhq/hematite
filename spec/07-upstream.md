@@ -40,6 +40,11 @@ fails at the socket.
 
 ## 3. Header hygiene
 
+Before policy and authorization, the proxy MUST reject multiple `Host`
+headers and any `Host` value outside visible ASCII or the canonical authority
+grammar. This check also applies when an absolute-form URI supplies the
+destination. The proxy MUST NOT forward duplicate or opaque `Host` bytes.
+
 Before forwarding, the proxy MUST strip the hop-by-hop headers (RFC 7230
 §6.1): `Connection`, `Proxy-Connection`, `Keep-Alive`, `Proxy-Authenticate`,
 `Proxy-Authorization`, `TE`, `Trailer`, `Transfer-Encoding`, and `Upgrade`,
@@ -67,3 +72,25 @@ upstreams.
 vars override them) route hematite's own upstream connections through a
 corporate forward proxy. The guard still applies to the address actually
 dialed (the chained proxy's).
+
+## 6. External authorization
+
+When top-level `external_authorization` is configured, the fixed v1 callback
+runs after the local pipeline allows and immediately before workload DNS.
+The callback receives only version, request ID, fixed service/action,
+configured subject, and canonical logical destination. It never receives
+method, path, query, headers, body, SNI, resolved IP, or client address.
+
+The client performs one HTTPS POST to `/v1/authorize`, never follows a
+redirect, ignores proxy environment variables, and is separate from the
+workload dialer. Request and response bodies are capped at 4 KiB. Only a 200
+`application/json` response with the exact request ID, closed schema, bounded
+strings, and `decision: allow` creates a proof. Deny is a policy refusal;
+timeout, TLS, EOF, non-200, malformed, oversized, or mismatched responses are
+safe transport/general failures. There is no retry or decision cache.
+
+The permit is consumed by one dial operation, including its address
+candidates. DNS results and IP literals still pass the existing resolved-IP
+guard immediately before each socket connection. External allow cannot
+bypass metadata, loopback, link-local, private, service, or operator CIDRs
+configured in that guard.

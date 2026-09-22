@@ -101,12 +101,35 @@ not the proxy's:
 5. **Bind management to loopback.** The reload endpoint should listen on
    loopback (or an otherwise-restricted interface); its token is compared in
    constant time, but it is still a control-plane surface.
-6. **Review `upstream_deny_cidrs`.** The defaults cover cloud metadata and
-   loopback. Add your own internal ranges (RFC 1918, service meshes) if the
-   workloads should not reach them. Those ranges are outside the default deny list.
+6. **Review `upstream_deny_cidrs`.** The default guard intentionally covers
+   only cloud metadata and loopback. Operators and authorizers must add any
+   private, link-local, service-mesh, or internal ranges that workloads must
+   not reach.
 
 ## Reporting
 
 This is a v0.1 reference implementation. Security-relevant findings should be
 raised as issues (or via private disclosure to the maintainers); please
 withhold public exploit details until coordinated.
+
+## Authoritative managed egress
+
+With `external_authorization` enabled, Hematite asks the configured service
+about the canonical logical destination after local policy and immediately
+before DNS. The target-bound proof prevents authorizing one destination and
+dialing another. External allow still cannot bypass the post-resolution CIDR
+guard. Tokens and callback response bodies never enter telemetry.
+
+The callback is authoritative only when deployment topology is authoritative:
+run a separate proxy boundary per session (or an equivalently isolated
+identity), and use Kubernetes NetworkPolicy, Docker network isolation, or
+host firewall rules so the workload can reach neither the internet nor the
+callback directly. A sidecar in the same unconstrained network namespace is
+not an authorization boundary. Protect the immutable session/workload
+mapping at rollout and have the service authenticate the bearer token and
+server-bind that identity rather than trusting workload headers.
+
+When `external_authorization` is enabled, `dns.passthrough` must be empty or
+startup and reload fail. Enforce proxy DNS and network topology as separate
+controls. DNS passthrough remains available when external authorization is
+disabled.

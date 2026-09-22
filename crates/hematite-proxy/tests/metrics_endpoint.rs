@@ -40,6 +40,7 @@ async fn spawn_management(metrics: Arc<Metrics>, metrics_enabled: bool, api_key:
         api_key_owned,
         std::path::PathBuf::from("/dev/null"),
         config.listen,
+        None,
         metrics,
         metrics_enabled,
     ));

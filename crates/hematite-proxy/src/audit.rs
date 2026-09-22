@@ -90,6 +90,7 @@ impl Drop for PendingAudit {
             response_transforms: Vec::new(),
             tunnel: None,
             guard: None,
+            authorization: None,
             body_capture: None,
         };
         self.sink.emit(&record, Level::Error);

@@ -16,9 +16,12 @@ use hematite_kernel::config::{build_pipeline_with_resolver, ConfigError, Transfo
 
 use std::sync::Arc;
 
+use crate::external_auth::{
+    validate_config as validate_external_auth, ExternalAuthorizationKey, ExternalAuthorizer,
+};
 use crate::metrics::Metrics;
 use crate::resolver::EnvFileResolver;
-use crate::state::{native_upstream_config, Guard, Runtime};
+use crate::state::{native_upstream_config, ExternalAuthorization, Guard, Runtime};
 use crate::tls::{CertCache, SigningCa};
 
 /// Raw YAML shape. Unknown keys fail parsing at every level (threat T9:
@@ -40,6 +43,19 @@ pub struct RawConfig {
     pub log: Option<LogSection>,
     #[serde(default)]
     pub observability: ObservabilitySection,
+    #[serde(default)]
+    pub external_authorization: Option<ExternalAuthorizationSection>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalAuthorizationSection {
+    pub endpoint: String,
+    pub token_file: String,
+    pub session_id: String,
+    pub workload_id: String,
+    #[serde(default)]
+    pub timeout: Option<String>,
 }
 
 // ── Observability section ────────────────────────────────────────────────────
@@ -231,6 +247,7 @@ pub struct TlsResolved {
 /// The resolved configuration after defaults.
 pub struct Config {
     pub listen: ListenKeys,
+    pub external_authorization: Option<ExternalAuthorizationResolved>,
     pub max_request_body_bytes: usize,
     pub max_response_body_bytes: usize,
     pub upstream_response_header_timeout: Duration,
@@ -246,6 +263,12 @@ pub struct Config {
     pub tunnel_passthrough_domains: Vec<String>,
     pub warnings: Vec<String>,
     pub observability: ObservabilitySection,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExternalAuthorizationResolved {
+    pub key: ExternalAuthorizationKey,
+    pub timeout: Duration,
 }
 
 /// Resolved DNS server settings (Part 06 §1).
@@ -287,6 +310,11 @@ const ENV_KEYS: &[&str] = &[
     "observability.otlp.endpoint",
     "observability.otlp.sample_ratio",
     "observability.otlp.service_name",
+    "external_authorization.endpoint",
+    "external_authorization.token_file",
+    "external_authorization.session_id",
+    "external_authorization.workload_id",
+    "external_authorization.timeout",
 ];
 
 fn env_name(path: &str) -> String {
@@ -413,8 +441,46 @@ pub fn load_str(yaml: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Conf
         .as_ref()
         .and_then(|l| l.level.clone())
         .unwrap_or_else(|| "info".into());
+    let external_authorization = raw
+        .external_authorization
+        .as_ref()
+        .map(|a| {
+            validate_external_auth(&a.endpoint, &a.session_id, &a.workload_id)
+                .map_err(LoadError)?;
+            let timeout = a
+                .timeout
+                .as_deref()
+                .map(parse_duration)
+                .transpose()?
+                .unwrap_or(Duration::from_millis(250));
+            if timeout.is_zero() || timeout > Duration::from_secs(1) {
+                return Err(LoadError(
+                    "external_authorization.timeout must be between 1ms and 1s".into(),
+                ));
+            }
+            Ok(ExternalAuthorizationResolved {
+                key: ExternalAuthorizationKey {
+                    endpoint: a.endpoint.clone(),
+                    token_file: a.token_file.clone(),
+                    session_id: a.session_id.clone(),
+                    workload_id: a.workload_id.clone(),
+                },
+                timeout,
+            })
+        })
+        .transpose()?;
 
     // 4. Validate.
+    if external_authorization.is_some()
+        && raw
+            .dns
+            .as_ref()
+            .is_some_and(|dns| !dns.passthrough.is_empty())
+    {
+        return Err(LoadError(
+            "dns.passthrough must be empty when external_authorization is enabled".into(),
+        ));
+    }
     if let Some(dns) = &raw.dns {
         if dns.enabled {
             if dns.proxy_ip.is_none() {
@@ -540,6 +606,7 @@ pub fn load_str(yaml: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Conf
 
     Ok(Config {
         listen,
+        external_authorization,
         max_request_body_bytes,
         max_response_body_bytes,
         upstream_response_header_timeout,
@@ -634,9 +701,26 @@ pub fn build_runtime_with_metrics(
         _ => None,
     };
 
+    let external_authorization = match &config.external_authorization {
+        None => ExternalAuthorization::Disabled,
+        Some(a) => ExternalAuthorization::Configured(Arc::new(
+            ExternalAuthorizer::new(
+                &a.key.endpoint,
+                &a.key.token_file,
+                a.key.session_id.clone(),
+                a.key.workload_id.clone(),
+                a.timeout,
+                upstream_tls.clone(),
+                metrics.clone(),
+            )
+            .map_err(LoadError)?,
+        )),
+    };
+
     Ok(Runtime {
         pipeline,
         guard,
+        external_authorization,
         max_request_body_bytes: config.max_request_body_bytes,
         upstream_response_header_timeout: config.upstream_response_header_timeout,
         dial_timeout: Duration::from_secs(30),
