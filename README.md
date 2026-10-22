@@ -1,5 +1,8 @@
 # hematite
 
+> [!WARNING]
+> hematite is experimental. It is not recommended for production use. Interfaces and behavior may change without notice.
+
 [![ci](https://github.com/tkhq/hematite/actions/workflows/ci.yml/badge.svg)](https://github.com/tkhq/hematite/actions/workflows/ci.yml)
 [![docker](https://github.com/tkhq/hematite/actions/workflows/docker.yml/badge.svg)](https://github.com/tkhq/hematite/actions/workflows/docker.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
