@@ -107,6 +107,5 @@ not the proxy's:
 
 ## Reporting
 
-This is a v0.1 reference implementation. Security-relevant findings should be
-raised as issues (or via private disclosure to the maintainers); please
-withhold public exploit details until coordinated.
+To report a vulnerability, follow https://docs.turnkey.com/security/reporting-a-vulnerability
+Do not raise security findings in public GitHub issues.
