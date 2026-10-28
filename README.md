@@ -23,7 +23,7 @@ by executable test vectors; review discipline is not relied on.
 - Usage guide: [`docs/usage.md`](docs/usage.md): running and deploying
 - Configuration reference: [`docs/configuration.md`](docs/configuration.md): every config key
 - Kubernetes / Helm: [`docs/kubernetes.md`](docs/kubernetes.md)
-- Security and threat model: [`docs/security.md`](docs/security.md)
+- Security and threat model: [`docs/threat-model.md`](docs/threat-model.md)
 - Specification: [`spec/`](spec/README.md)
 
 ## What it does
@@ -85,10 +85,10 @@ still move. Milestones in [`spec/README.md`](spec/README.md) §Status.
 
 ## Security
 
-Please report vulnerabilities privately through GitHub's vulnerability
-reporting: the repository's **Security** tab, then *Report a vulnerability*.
-Keep security reports out of public issues. The threat model and security
-properties are documented in [`docs/security.md`](docs/security.md).
+Report vulnerabilities through Turnkey's vulnerability reporting process:
+https://docs.turnkey.com/security/reporting-a-vulnerability
+Do not report them in public GitHub issues. The threat model and security
+properties are documented in [`docs/threat-model.md`](docs/threat-model.md).
 
 ## Acknowledgements
 
